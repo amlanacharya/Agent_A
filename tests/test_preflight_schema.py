@@ -153,6 +153,21 @@ def test_build_series_keys_preserves_null_grain_rows():
     assert all("|" in key for key in series_map)
 
 
+def test_detect_frequency_includes_null_grain_groups_in_period_counts():
+    df = pd.DataFrame(
+        {
+            "week": ["2024-W01", "2024-W02", "2024-W01"],
+            "sku": ["A", "A", None],
+            "region": ["NORTH", "NORTH", "NORTH"],
+            "demand": [1.0, 3.0, 2.0],
+        }
+    )
+    schema = map_schema(df, PLAYBOOK)
+    grain_rpt = detect_frequency_and_grain(df, schema)
+    assert grain_rpt.min_periods == 1
+    assert grain_rpt.max_periods == 2
+
+
 def test_parse_dates_supports_iso_week_as_monday():
     parsed = _parse_dates(pd.Series(["2024-W01", "2024-W02"]))
     assert parsed.notna().all()

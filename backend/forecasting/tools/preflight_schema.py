@@ -80,7 +80,11 @@ def detect_frequency_and_grain(df: pd.DataFrame, schema: SchemaMapping) -> Grain
             detected_frequency = "daily"
         gaps_detected = bool((deltas > median_delta * 1.5).any())
 
-    counts = df.groupby(schema.grain_cols)[schema.date_col].count() if schema.grain_cols else pd.Series([len(df)])
+    counts = (
+        df.groupby(schema.grain_cols, dropna=False)[schema.date_col].count()
+        if schema.grain_cols
+        else pd.Series([len(df)])
+    )
     if len(counts):
         min_periods = int(counts.min())
         max_periods = int(counts.max())
