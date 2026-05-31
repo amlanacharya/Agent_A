@@ -1,4 +1,6 @@
 import pandas as pd
+import pytest
+import warnings
 
 from forecasting.tools.preflight_schema import (
     _normalise_key,
@@ -46,6 +48,12 @@ def test_profile_all_zero_demand_blocks():
     assert any(b.code == "ALL_ZERO_DEMAND" for b in rpt.blocking_issues)
 
 
+def test_profile_balanced_nonzero_sum_is_not_all_zero():
+    df = pd.DataFrame({"week": ["2024-W01", "2024-W02"], "sku": ["A", "A"], "region": ["NORTH", "NORTH"], "demand": [1.0, -1.0]})
+    rpt = profile_uploaded_data(df)
+    assert not any(b.code == "ALL_ZERO_DEMAND" for b in rpt.blocking_issues)
+
+
 def test_profile_missing_demand_col_blocks():
     df = make_df().drop(columns=["demand"])
     rpt = profile_uploaded_data(df)
@@ -58,12 +66,27 @@ def test_profile_missing_date_col_blocks():
     assert any(b.code == "MISSING_DATE_COLUMN" for b in rpt.blocking_issues)
 
 
+def test_profile_non_date_strings_emit_no_warnings():
+    df = pd.DataFrame({"sku": ["foo", "bar"], "region": ["north", "south"], "demand": [1.0, 2.0]})
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        rpt = profile_uploaded_data(df)
+    assert len(captured) == 0
+    assert any(b.code == "MISSING_DATE_COLUMN" for b in rpt.blocking_issues)
+
+
 def test_map_schema_detects_columns():
     df = make_df()
     schema = map_schema(df, PLAYBOOK)
     assert schema.date_col == "week"
     assert schema.demand_col == "demand"
     assert set(schema.grain_cols) == {"sku", "region"}
+
+
+def test_map_schema_raises_when_playbook_time_col_missing():
+    df = pd.DataFrame({"sku": ["A"], "region": ["NORTH"], "demand": [1.0]})
+    with pytest.raises(ValueError, match="date column"):
+        map_schema(df, PLAYBOOK)
 
 
 def test_detect_frequency_weekly():
@@ -96,6 +119,22 @@ def test_series_df_has_exact_date_and_demand_cols():
         assert list(sub_df.columns) == ["date", "demand"]
 
 
+def test_build_series_keys_collision_safe():
+    df = pd.DataFrame(
+        {
+            "week": ["2024-W01", "2024-W02", "2024-W01", "2024-W02"],
+            "sku": ["a-1", "a-1", "a1", "a1"],
+            "region": ["NORTH", "NORTH", "NORTH", "NORTH"],
+            "demand": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    schema = map_schema(df, PLAYBOOK)
+    series_map = build_series_keys(df, schema, PLAYBOOK)
+    assert len(series_map) == 2
+    assert all(key == key.upper() for key in series_map)
+    assert all("|" in key for key in series_map)
+
+
 def test_parse_dates_supports_iso_week_as_monday():
     parsed = _parse_dates(pd.Series(["2024-W01", "2024-W02"]))
     assert parsed.notna().all()
@@ -106,4 +145,3 @@ def test_parse_dates_supports_iso_week_as_monday():
 def test_normalise_key_enforces_allowed_charset():
     key = _normalise_key(("sku 1", "north/west"))
     assert key == "SKU_1|NORTHWEST"
-
