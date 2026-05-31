@@ -2480,7 +2480,7 @@ def run_conductor(
     tokens_used: int,
     sse_emit: Callable,
 ) -> int:
-    guard = AgentGuardState(agent="conductor", run_id=run_id)
+    guard = AgentGuardState(agent_name="conductor")
     messages = [{
         "role": "user",
         "content": (
@@ -3211,7 +3211,7 @@ def run_meridian(
     tokens_used: int,
     sse_emit: Callable,
 ) -> int:
-    guard = AgentGuardState(agent="meridian", run_id=run_id)
+    guard = AgentGuardState(agent_name="meridian")
     system = _SYSTEM_TEMPLATE.format(preflight_json=json.dumps(preflight_bundle, indent=2)[:4000])
     messages = list(conversation_history) + [{"role": "user", "content": user_message}]
 
@@ -3632,7 +3632,7 @@ def run_forge(
     tokens_used: int,
     sse_emit: Callable,
 ) -> int:
-    guard = AgentGuardState(agent="forge", run_id=run_id)
+    guard = AgentGuardState(agent_name="forge")
     messages = [{"role": "user", "content": f"domain_context_pack:\n{json.dumps(domain_context_pack, indent=2)}"}]
 
     while True:
@@ -4059,7 +4059,7 @@ def run_foundry(
     sse_emit: Callable,
     foundry_guard: FoundryRunGuard,
 ) -> int:
-    guard = AgentGuardState(agent="foundry", run_id=run_id)
+    guard = AgentGuardState(agent_name="foundry")
     messages = [{
         "role": "user",
         "content": (
@@ -4509,7 +4509,7 @@ def run_prism(
     tokens_used: int,
     sse_emit: Callable,
 ) -> int:
-    guard = AgentGuardState(agent="prism", run_id=run_id)
+    guard = AgentGuardState(agent_name="prism")
     messages = [{
         "role": "user",
         "content": (
@@ -6424,6 +6424,1073 @@ Expected:
 git add frontend/src/components/ReportView.tsx frontend/src/components/DecisionPanel.tsx frontend/src/App.tsx frontend/dist/
 git commit -m "feat: ReportView and DecisionPanel — claims, risks, overrides, foundry report table"
 ```
+
+---
+
+## Phase G — Agentic Layer (Project B)
+
+> Tasks 32–42. Layers the agentic interaction model (Checkpoints, Loop-back, Narration) onto the pipeline built in Phases A–F. Rationale in ADR-0005; behavioural contracts in `docs/specs/spec.md` (Agentic Interaction Layer). Build only after Phases A–F exist — these tasks **modify** files created there.
+
+**Goal:** any domain agent can pause for human input (`raise_need` → resumable `PauseForInput`); Conductor routes `USER_DECISION` (it voices) vs `SCOPE_AMENDMENT` (Meridian voices, scoped pack amendment, bounded loop-back); agents narrate. Resume = idempotent re-invocation; cumulative budgets persist in RunState.
+
+---
+
+### Task 32: Agentic contracts — `AgentNeed`, `AwaitingInput`, `PauseForInput`
+
+**Files:**
+- Modify: `backend/forecasting/contracts.py`
+- Create: `tests/test_agentic_contracts.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_agentic_contracts.py
+import pytest
+from pydantic import ValidationError
+from forecasting.contracts import AgentNeed, AwaitingInput
+
+
+def test_agent_need_roundtrips():
+    need = AgentNeed(agent="foundry", kind="USER_DECISION",
+                     question="18 series fell short — what now?",
+                     options=["drop", "relax_target", "accept_caution"],
+                     context={"series_count": 18})
+    assert need.kind == "USER_DECISION"
+    assert AgentNeed(**need.model_dump()) == need
+
+
+def test_awaiting_input_wraps_need():
+    need = AgentNeed(agent="forge", kind="SCOPE_AMENDMENT",
+                     question="Confirm break at 2024-W30?", options=["yes", "no"], context={})
+    aw = AwaitingInput(need=need, raised_at="2026-05-31T10:00:00+00:00")
+    assert aw.need.agent == "forge"
+
+
+def test_invalid_kind_rejected():
+    with pytest.raises(ValidationError):
+        AgentNeed(agent="forge", kind="WHATEVER", question="?", options=[], context={})
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_agentic_contracts.py -v`
+Expected: FAIL — `ImportError: cannot import name 'AgentNeed'`.
+
+- [ ] **Step 3: Append to `contracts.py`**
+
+```python
+# ---------------------------------------------------------------------------
+# Agentic interaction (Needs / Pauses) — ADR-0005
+# ---------------------------------------------------------------------------
+
+NeedKind = Literal["USER_DECISION", "SCOPE_AMENDMENT"]
+
+
+class AgentNeed(BaseModel):
+    agent:    str                       # "forge", "foundry", "prism", "meridian"
+    kind:     NeedKind
+    question: str
+    options:  list[str] = Field(default_factory=list)
+    context:  dict = Field(default_factory=dict)
+
+
+class AwaitingInput(BaseModel):
+    need:      AgentNeed
+    raised_at: str
+
+
+class PauseForInput(Exception):
+    """Non-terminal: an agent needs human input. Resumable; resets nothing.
+    Distinct from guard.GuardHalt (terminal)."""
+    def __init__(self, need: "AgentNeed"):
+        super().__init__(f"{need.agent} needs input: {need.question}")
+        self.need = need
+```
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_agentic_contracts.py -v`
+Expected: PASS (3 tests).
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/contracts.py tests/test_agentic_contracts.py
+git commit -m "feat: agentic contracts — AgentNeed, AwaitingInput, PauseForInput"
+```
+
+---
+
+### Task 33: RunState gains the agentic fields
+
+**Files:**
+- Modify: `backend/forecasting/run_state.py`
+- Modify: `tests/test_run_state.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_run_state.py  (add)
+from forecasting.run_state import create_run_state, load_run_state, save_run_state
+
+
+def test_new_run_has_agentic_defaults(run_id, tmp_outputs):
+    state = create_run_state(run_id, domain="fmcg")
+    assert state.awaiting_input is None
+    assert state.loopback_count == 0
+    assert state.pack_version == 0
+    assert state.tokens_used_total == 0
+    assert state.foundry_calls_total == 0
+
+
+def test_agentic_fields_persist(run_id, tmp_outputs):
+    state = create_run_state(run_id, domain="fmcg")
+    state.tokens_used_total = 1234
+    state.loopback_count = 1
+    save_run_state(state)
+    reloaded = load_run_state(run_id)
+    assert reloaded.tokens_used_total == 1234
+    assert reloaded.loopback_count == 1
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_run_state.py -k agentic -v`
+Expected: FAIL — `AttributeError: ... 'awaiting_input'`.
+
+- [ ] **Step 3: Add fields to the `RunState` model**
+
+Add the import at the top of `run_state.py`:
+
+```python
+from forecasting.contracts import AwaitingInput
+```
+
+Add to the `RunState` Pydantic model:
+
+```python
+    # --- agentic interaction (ADR-0005) ---
+    pack_version:        int = 0
+    awaiting_input:      AwaitingInput | None = None
+    pending_amendment:   dict | None = None   # series_keys + what changed, set on loop-back
+    loopback_count:      int = 0
+    tokens_used_total:   int = 0
+    foundry_calls_total: int = 0
+```
+
+If `save_run_state` uses `model_dump()`, change it to `model_dump(mode="json")` so the nested `AwaitingInput` serialises.
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_run_state.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/run_state.py tests/test_run_state.py
+git commit -m "feat: RunState — agentic fields (awaiting_input, pack_version, loopback/budget counters)"
+```
+
+---
+
+### Task 34: Guard — loop-back cap + `.env`
+
+**Files:**
+- Modify: `backend/forecasting/guard.py`
+- Modify: `tests/test_guard.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_guard.py  (add)
+import pytest
+from forecasting.guard import GuardConfig, check_loopback, GuardHalt
+
+
+def test_loopback_cap_halts():
+    config = GuardConfig(max_loopbacks=3)
+    for n in range(3):
+        check_loopback(n, config)
+    with pytest.raises(GuardHalt, match="loop-back"):
+        check_loopback(3, config)
+
+
+def test_guardconfig_loopback_env(monkeypatch):
+    monkeypatch.setenv("GUARD_MAX_LOOPBACKS", "1")
+    assert GuardConfig().max_loopbacks == 1
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_guard.py -k loopback -v`
+Expected: FAIL — `ImportError: cannot import name 'check_loopback'`.
+
+- [ ] **Step 3: Add the cap + config field**
+
+Add to `GuardConfig`:
+
+```python
+    max_loopbacks: int = field(default_factory=lambda: _env_int("GUARD_MAX_LOOPBACKS", 3))
+```
+
+Add the standalone check:
+
+```python
+def check_loopback(current_count: int, config: GuardConfig) -> None:
+    """Halt if a scope-amendment loop-back would exceed the cap (ADR-0005)."""
+    if current_count >= config.max_loopbacks:
+        raise GuardHalt(f"loop-back cap reached: {current_count} >= {config.max_loopbacks}")
+```
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_guard.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/guard.py tests/test_guard.py
+git commit -m "feat: guard — loop-back cap (.env GUARD_MAX_LOOPBACKS)"
+```
+
+---
+
+### Task 35: Shared agent runner — `raise_need`, suspend, budget persistence
+
+**Files:**
+- Create: `backend/forecasting/agents/_runner.py`
+- Create: `tests/test_agent_runner.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_agent_runner.py
+import pytest
+from forecasting.agents._runner import raise_need, suspend_for_need, seed_budgets, persist_budgets
+from forecasting.contracts import AgentNeed, PauseForInput
+from forecasting.run_state import create_run_state, load_run_state
+from forecasting.guard import AgentGuardState, GuardConfig
+
+
+def test_raise_need_raises_pause():
+    with pytest.raises(PauseForInput) as exc:
+        raise_need("foundry", "USER_DECISION", "Drop these?", ["drop", "keep"], {"n": 3})
+    assert exc.value.need.agent == "foundry"
+
+
+def test_suspend_persists_need(run_id, tmp_outputs):
+    create_run_state(run_id, domain="fmcg")
+    need = AgentNeed(agent="forge", kind="SCOPE_AMENDMENT", question="Break?", options=["y", "n"], context={})
+    suspend_for_need(run_id, need)
+    assert load_run_state(run_id).awaiting_input.need.agent == "forge"
+
+
+def test_budgets_seed_and_persist(run_id, tmp_outputs):
+    create_run_state(run_id, domain="fmcg")
+    guard = AgentGuardState(agent_name="foundry")
+    seed_budgets(guard, run_id)
+    guard._call_count = 5
+    persist_budgets(guard, run_id, tokens=2000)
+    assert load_run_state(run_id).tokens_used_total == 2000
+    assert load_run_state(run_id).foundry_calls_total == 5
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_agent_runner.py -v`
+Expected: FAIL — `ModuleNotFoundError: ... _runner`.
+
+- [ ] **Step 3: Write `agents/_runner.py`**
+
+```python
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from forecasting.contracts import AgentNeed, AwaitingInput, PauseForInput
+from forecasting.guard import AgentGuardState
+from forecasting.run_state import load_run_state, save_run_state
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def raise_need(agent: str, kind: str, question: str, options: list[str], context: dict) -> None:
+    """Never returns — raises PauseForInput, which the agent loop catches and suspends on."""
+    raise PauseForInput(AgentNeed(agent=agent, kind=kind, question=question,
+                                  options=options, context=context))
+
+
+def suspend_for_need(run_id: str, need: AgentNeed) -> None:
+    state = load_run_state(run_id)
+    state.awaiting_input = AwaitingInput(need=need, raised_at=_now())
+    save_run_state(state)
+
+
+def clear_awaiting(run_id: str) -> None:
+    state = load_run_state(run_id)
+    state.awaiting_input = None
+    save_run_state(state)
+
+
+def seed_budgets(guard: AgentGuardState, run_id: str) -> None:
+    """Re-seed in-memory guard from persisted counters so a re-invoked (resumed) agent
+    continues counting where the run left off (ADR-0005)."""
+    state = load_run_state(run_id)
+    if guard.agent_name == "foundry":
+        guard._call_count = state.foundry_calls_total
+
+
+def persist_budgets(guard: AgentGuardState, run_id: str, tokens: int) -> None:
+    state = load_run_state(run_id)
+    state.tokens_used_total += tokens
+    if guard.agent_name == "foundry":
+        state.foundry_calls_total = guard._call_count
+    save_run_state(state)
+```
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_agent_runner.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/agents/_runner.py tests/test_agent_runner.py
+git commit -m "feat: agent runner — raise_need, suspend, budget seed/persist"
+```
+
+---
+
+### Task 36: Pipeline agent loops — catch `PauseForInput` + narrate
+
+**Files:**
+- Modify: `backend/forecasting/agents/forge.py`, `foundry.py`, `prism.py`
+- Create: `tests/test_agent_pause.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_agent_pause.py
+from unittest.mock import MagicMock, patch
+from forecasting.run_state import create_run_state, load_run_state
+from forecasting.agents.foundry import run_foundry
+from forecasting.guard import FoundryRunGuard
+
+
+def _tool_use_response(name, args):
+    block = MagicMock(); block.type = "tool_use"; block.name = name; block.input = args; block.id = "t1"
+    resp = MagicMock(); resp.content = [block]; resp.stop_reason = "tool_use"
+    resp.usage = MagicMock(input_tokens=10, output_tokens=5)
+    return resp
+
+
+def test_foundry_suspends_on_pause(run_id, tmp_outputs):
+    create_run_state(run_id, domain="fmcg")
+    events = []
+    with patch("forecasting.agents.foundry.client") as c:
+        c.messages.create.return_value = _tool_use_response(
+            "raise_need", {"agent": "foundry", "kind": "USER_DECISION",
+                           "question": "Drop 3?", "options": ["drop", "keep"], "context": {}})
+        run_foundry(
+            run_id,
+            eda_report={"run_id": run_id, "segments": []},
+            domain_context_pack={"run_id": run_id, "segments": [], "forecast_scope": {"horizon": 4}},
+            tokens_used=0,
+            sse_emit=lambda k, p: events.append((k, p)),
+            foundry_guard=FoundryRunGuard(run_id=run_id),
+        )
+    assert load_run_state(run_id).awaiting_input is not None
+    assert any(k == "agent_needs_input" for k, _ in events)
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_agent_pause.py -v`
+Expected: FAIL — pause propagates / `raise_need` not registered.
+
+- [ ] **Step 3: Wire the runner into each pipeline agent loop**
+
+In each of `forge.py`, `foundry.py`, `prism.py`:
+
+1. Register `raise_need` in the dispatch map and add its schema to the agent's `*_TOOLS` list:
+
+```python
+{"name": "raise_need", "description": "Pause and ask the human when no defensible default exists.",
+ "input_schema": {"type": "object", "properties": {
+     "agent": {"type": "string"}, "kind": {"type": "string", "enum": ["USER_DECISION", "SCOPE_AMENDMENT"]},
+     "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}},
+     "context": {"type": "object"}},
+  "required": ["agent", "kind", "question", "options", "context"]}}
+```
+
+2. Wrap the dispatch loop to forward narration and catch the pause (`AGENT_NAME` is the agent's name string):
+
+```python
+from forecasting.contracts import PauseForInput
+from forecasting.agents._runner import suspend_for_need, seed_budgets, persist_budgets
+
+seed_budgets(guard, run_id)          # continue cumulative count from RunState (ADR-0005)
+_turn_tokens = 0
+try:
+    # ... inside the existing tool-use while-loop, after each client.messages.create(...): ...
+    _turn_tokens += response.usage.input_tokens + response.usage.output_tokens
+    for block in response.content:
+        if block.type == "text" and block.text.strip():
+            sse_emit("agent_reasoning", {"agent": AGENT_NAME, "text": block.text.strip()})
+        elif block.type == "tool_use":
+            result = dispatch_tool(block.name, block.input)   # may raise PauseForInput
+            # ... append tool_result as today ...
+except PauseForInput as p:
+    suspend_for_need(run_id, p.need)
+    sse_emit("agent_needs_input", p.need.model_dump())
+    persist_budgets(guard, run_id, tokens=_turn_tokens)
+    return   # suspend — do NOT halt
+```
+
+`AGENT_NAME` is the agent's name string (`"forge"`/`"foundry"`/`"prism"`); `_turn_tokens` accumulates `response.usage.input_tokens + response.usage.output_tokens` across the tool-use loop.
+
+3. On normal completion call `persist_budgets(guard, run_id, tokens=_turn_tokens)` before returning. At loop start, **skip segments/series whose artifact already exists** (Forge: `eda_report_partial.json`; Foundry: `series_results/{key}.json`) so resume is idempotent.
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_agent_pause.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/agents/forge.py backend/forecasting/agents/foundry.py backend/forecasting/agents/prism.py tests/test_agent_pause.py
+git commit -m "feat: pipeline agents — narrate + suspend on PauseForInput"
+```
+
+---
+
+### Task 37: Conductor — `resolve_need` and `reroute`
+
+**Files:**
+- Modify: `backend/forecasting/tools/conductor_tools.py`, `backend/forecasting/agents/conductor.py`
+- Modify: `tests/test_conductor.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_conductor.py  (add)
+import pytest
+from forecasting.tools.conductor_tools import resolve_need, reroute
+from forecasting.contracts import AgentNeed, AwaitingInput
+from forecasting.run_state import create_run_state, load_run_state, save_run_state
+from forecasting.guard import GuardHalt
+
+
+def _suspend(run_id, kind):
+    s = create_run_state(run_id, domain="fmcg"); s.phase = "foundry_modelling"
+    s.awaiting_input = AwaitingInput(
+        need=AgentNeed(agent="foundry", kind=kind, question="?", options=["a"], context={}),
+        raised_at="2026-05-31T00:00:00+00:00")
+    save_run_state(s)
+
+
+def test_resolve_user_decision_clears_awaiting(run_id, tmp_outputs):
+    _suspend(run_id, "USER_DECISION")
+    resolve_need(run_id, answer="accept_caution")
+    assert load_run_state(run_id).awaiting_input is None
+
+
+def test_reroute_increments_loopback_and_moves_phase(run_id, tmp_outputs):
+    _suspend(run_id, "SCOPE_AMENDMENT")
+    reroute(run_id, target_phase="meridian_scoping", reason="confirm break")
+    s = load_run_state(run_id)
+    assert s.phase == "meridian_scoping" and s.loopback_count == 1
+
+
+def test_reroute_halts_past_cap(run_id, tmp_outputs, monkeypatch):
+    monkeypatch.setenv("GUARD_MAX_LOOPBACKS", "0")
+    _suspend(run_id, "SCOPE_AMENDMENT")
+    with pytest.raises(GuardHalt, match="loop-back"):
+        reroute(run_id, target_phase="meridian_scoping", reason="x")
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_conductor.py -k "resolve or reroute" -v`
+Expected: FAIL — `ImportError: cannot import name 'resolve_need'`.
+
+- [ ] **Step 3: Implement the tools**
+
+Add to `conductor_tools.py`:
+
+```python
+from forecasting.guard import GuardConfig, check_loopback
+from forecasting.run_state import load_run_state, save_run_state
+
+
+def resolve_need(run_id: str, answer: str) -> dict:
+    """USER_DECISION → clear awaiting_input; the same agent is re-invoked by the message
+    handler and records the outcome. SCOPE_AMENDMENT is handled via reroute."""
+    state = load_run_state(run_id)
+    if state.awaiting_input is None:
+        raise ValueError("resolve_need called with no awaiting_input")
+    need = state.awaiting_input.need
+    state.awaiting_input = None
+    save_run_state(state)
+    return {"resolved": True, "kind": need.kind, "answer": answer, "resume_agent": need.agent}
+
+
+def reroute(run_id: str, target_phase: str, reason: str) -> dict:
+    """Loop-back for a SCOPE_AMENDMENT: stash the amendment context (affected series) for
+    the re-lock, move phase backward, count it (bounded)."""
+    state = load_run_state(run_id)
+    check_loopback(state.loopback_count, GuardConfig())   # raises GuardHalt past cap
+    if state.awaiting_input is not None:
+        state.pending_amendment = dict(state.awaiting_input.need.context)
+    state.loopback_count += 1
+    state.phase = target_phase
+    state.awaiting_input = None
+    save_run_state(state)
+    return {"rerouted": True, "phase": target_phase, "loopback_count": state.loopback_count, "reason": reason}
+```
+
+In `conductor.py`, register both in the dispatch map + tool schema, and add the §5 hard rules to the system prompt (only `resolve_need` valid when `awaiting_input != None`; never exceed loop-back cap; a loop-back is a scoped amendment, not a re-scope).
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_conductor.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/tools/conductor_tools.py backend/forecasting/agents/conductor.py tests/test_conductor.py
+git commit -m "feat: conductor — resolve_need + reroute (bounded loop-back)"
+```
+
+---
+
+### Task 38: Loop-back re-run engine + the two checkpoints
+
+**Files:**
+- Modify: `backend/forecasting/tools/prism_tools.py`, `forge_tools.py`, `foundry_tools.py`
+- Create: `tests/test_loopback.py`; Modify: `tests/test_foundry_tools.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# tests/test_loopback.py
+from forecasting.tools.prism_tools import rerun_affected_series
+# Fixture mirrors tests/test_prism_tools._setup: baseline series in data_store + eda_report +
+# a baseline series_results/{key}.json. Then:
+
+
+def test_rerun_affected_series_main_namespace(run_id, tmp_outputs):
+    # (build fixture as in test_prism_tools, store modified series under run_id namespace)
+    out = rerun_affected_series(run_id, namespace=run_id, series_keys=["SKU_A|NORTH"],
+                                run_forge=True, run_foundry=True)
+    assert out["reran"] == ["SKU_A|NORTH"]
+    assert out["namespace"] == run_id
+```
+
+```python
+# tests/test_foundry_tools.py  (add)
+def test_shortfall_batches_into_one_need(run_id, tmp_outputs):
+    # When >0 series miss target after self-correction, foundry raises ONE USER_DECISION need
+    # whose context['series'] lists ALL shortfall keys (assert raise_need invoked once).
+    ...
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_loopback.py tests/test_foundry_tools.py -k "rerun or shortfall" -v`
+Expected: FAIL — `rerun_affected_series` undefined; shortfall batching missing.
+
+- [ ] **Step 3: Implement**
+
+1. In `prism_tools.py`, add a namespace param to `run_forge_for_scenario`/`run_foundry_for_scenario` (default = the `whatif_id`, so Prism behaviour is unchanged) and add the shared entrypoint:
+
+```python
+def rerun_affected_series(run_id: str, namespace: str, series_keys: list[str],
+                          run_forge: bool, run_foundry: bool, horizon: int = 4) -> dict:
+    """Re-run the affected slice through Forge/Foundry within `namespace`.
+    Loop-back passes namespace=run_id (mutate the main run in place);
+    Prism passes namespace=whatif_id (cloned scenario)."""
+    if run_forge:
+        run_forge_for_scenario(run_id, namespace, series_keys)
+    if run_foundry:
+        run_foundry_for_scenario(run_id, namespace, series_keys, horizon=horizon)
+    return {"reran": list(series_keys), "namespace": namespace}
+```
+
+2. In `forge_tools.py`, when a strong break is detected that is NOT in the pack's confirmed set:
+
+```python
+from forecasting.agents._runner import raise_need
+raise_need("forge", "SCOPE_AMENDMENT",
+           f"Detected a strong break at {date} not in the confirmed set — confirm it?",
+           options=["confirm", "ignore"], context={"date": date, "series_keys": affected})
+```
+
+3. In `foundry_tools.py`, after the deterministic pass, batch all shortfalls into one need:
+
+```python
+from forecasting.agents._runner import raise_need
+shortfall = [k for k in results if not results[k]["target_met"]]
+if shortfall:
+    raise_need("foundry", "USER_DECISION",
+               f"{len(shortfall)} series fell short of the MASE target.",
+               options=["drop", "relax_target", "accept_caution"],
+               context={"series": shortfall, "worst": shortfall[:3]})
+```
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_loopback.py tests/test_foundry_tools.py tests/test_prism_tools.py -v`
+Expected: PASS (Prism's existing tests stay green via the namespace default).
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/tools/prism_tools.py backend/forecasting/tools/forge_tools.py backend/forecasting/tools/foundry_tools.py tests/test_loopback.py tests/test_foundry_tools.py
+git commit -m "feat: loop-back re-run engine (namespaced) + Forge/Foundry checkpoints"
+```
+
+---
+
+### Task 39: SSE — close the stream when a run suspends
+
+`api/sse.py` (Task 23) emits arbitrary events via `emit(run_id, event_type, payload)`; `stream_events` ends the SSE stream when an event is in its `_TERMINAL` set. `agent_reasoning` is a normal mid-stream event (no change needed — agents emit it through `sse_emit`). But `agent_needs_input` means the agent has returned and the Run is suspended, so the stream must **close** (otherwise the client waits on 30s keepalives). The only change is adding `agent_needs_input` to `_TERMINAL`.
+
+**Files:**
+- Modify: `backend/forecasting/api/sse.py`
+- Create: `tests/test_sse.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_sse.py
+import pytest
+from forecasting.api.sse import emit, stream_events
+
+
+def test_agent_needs_input_terminates_stream(run_id):
+    emit(run_id, "agent_reasoning", {"agent": "foundry", "text": "working"})
+    emit(run_id, "agent_needs_input", {"agent": "foundry", "kind": "USER_DECISION",
+                                       "question": "?", "options": ["a"], "context": {}})
+    gen = stream_events(run_id)
+    first, second = next(gen), next(gen)
+    assert "event: agent_reasoning" in first
+    assert "event: agent_needs_input" in second
+    with pytest.raises(StopIteration):   # stream closes after the suspend
+        next(gen)
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_sse.py -v`
+Expected: FAIL — `stream_events` keeps yielding keepalives (no `StopIteration`) because `agent_needs_input` is not terminal.
+
+- [ ] **Step 3: Add `agent_needs_input` to `_TERMINAL`**
+
+In `api/sse.py`, `stream_events`:
+
+```python
+    _TERMINAL = {"message_done", "error", "pipeline_done", "whatif_done", "agent_needs_input"}
+```
+
+(`agent_reasoning` needs nothing — `emit` already forwards any event type.)
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_sse.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/api/sse.py tests/test_sse.py
+git commit -m "feat: sse — close stream on agent_needs_input (suspend)"
+```
+
+---
+
+### Task 40: Frontend — store fields + SSE consumers
+
+**Files:**
+- Modify: `frontend/src/stores/runStore.ts`, `frontend/src/stores/streamStore.ts`, `frontend/src/hooks/useSSE.ts`, `frontend/src/types/index.ts`
+- Create: `frontend/src/stores/__tests__/agentic.test.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// frontend/src/stores/__tests__/agentic.test.ts
+import { describe, it, expect, beforeEach } from "vitest";
+import { useRunStore } from "../runStore";
+import { useStreamStore } from "../streamStore";
+
+describe("agentic state", () => {
+  beforeEach(() => {
+    useRunStore.setState({ awaitingInput: null });
+    useStreamStore.setState({ activity: [] });
+  });
+
+  it("stores an agent need", () => {
+    useRunStore.getState().setAwaitingInput({
+      agent: "foundry", kind: "USER_DECISION", question: "Drop 3?", options: ["drop", "keep"], context: {},
+    });
+    expect(useRunStore.getState().awaitingInput?.agent).toBe("foundry");
+  });
+
+  it("appends narration", () => {
+    useStreamStore.getState().pushActivity({ agent: "forge", text: "starting G1" });
+    expect(useStreamStore.getState().activity).toHaveLength(1);
+  });
+});
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `cd frontend ; npx vitest run src/stores/__tests__/agentic.test.ts`
+Expected: FAIL — `setAwaitingInput`/`pushActivity` undefined.
+
+- [ ] **Step 3: Add store fields + actions + SSE wiring + the type**
+
+`types/index.ts`: `export interface AgentNeed { agent: string; kind: "USER_DECISION" | "SCOPE_AMENDMENT"; question: string; options: string[]; context: Record<string, unknown>; }`
+`runStore.ts`: add `awaitingInput: AgentNeed | null` + `setAwaitingInput(need)` / `clearAwaitingInput()`.
+`streamStore.ts`: add `activity: {agent: string; text: string}[]` + `pushActivity(line)`.
+`useSSE.ts`:
+
+```typescript
+es.addEventListener("agent_reasoning", (e) =>
+  useStreamStore.getState().pushActivity(JSON.parse(e.data)));
+es.addEventListener("agent_needs_input", (e) =>
+  useRunStore.getState().setAwaitingInput(JSON.parse(e.data)));
+```
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `cd frontend ; npx vitest run src/stores/__tests__/agentic.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add frontend/src/stores frontend/src/hooks/useSSE.ts frontend/src/types/index.ts
+git commit -m "feat(fe): agentic store fields + SSE consumers"
+```
+
+---
+
+### Task 41: Frontend — `CheckpointBubble` + `ActivityFeed`
+
+**Files:**
+- Create: `frontend/src/components/MainPanel/ConversationView/CheckpointBubble.tsx`
+- Create: `frontend/src/components/MainPanel/PipelineProgress/ActivityFeed.tsx`
+- Modify: `frontend/src/components/MainPanel/ConversationView/index.tsx`, `PipelineProgress/index.tsx`
+- Create: `frontend/src/components/__tests__/CheckpointBubble.test.tsx`
+
+- [ ] **Step 1: Write the failing test**
+
+```tsx
+// frontend/src/components/__tests__/CheckpointBubble.test.tsx
+import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { CheckpointBubble } from "../MainPanel/ConversationView/CheckpointBubble";
+
+describe("CheckpointBubble", () => {
+  it("renders question + one button per option and fires onAnswer", () => {
+    const onAnswer = vi.fn();
+    render(<CheckpointBubble need={{ agent: "foundry", kind: "USER_DECISION",
+      question: "Drop 3 series?", options: ["drop", "keep"], context: {} }} onAnswer={onAnswer} />);
+    expect(screen.getByText("Drop 3 series?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "drop" }));
+    expect(onAnswer).toHaveBeenCalledWith("drop");
+  });
+});
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `cd frontend ; npx vitest run src/components/__tests__/CheckpointBubble.test.tsx`
+Expected: FAIL — component missing.
+
+- [ ] **Step 3: Implement**
+
+```tsx
+// CheckpointBubble.tsx
+import type { AgentNeed } from "../../../types";
+
+export function CheckpointBubble({ need, onAnswer }: { need: AgentNeed; onAnswer: (a: string) => void }) {
+  return (
+    <div className="rounded-lg border border-amber-400 bg-amber-50 p-3">
+      <div className="text-xs font-semibold text-amber-700">{need.agent} needs your input</div>
+      <p className="mt-1 text-sm">{need.question}</p>
+      <div className="mt-2 flex gap-2">
+        {need.options.map((o) => (
+          <button key={o} onClick={() => onAnswer(o)}
+                  className="rounded bg-amber-600 px-3 py-1 text-sm text-white">{o}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+```tsx
+// ActivityFeed.tsx
+import { useStreamStore } from "../../../stores/streamStore";
+
+export function ActivityFeed() {
+  const activity = useStreamStore((s) => s.activity);
+  return (
+    <div className="max-h-48 overflow-y-auto text-xs text-slate-600">
+      {activity.map((a, i) => (
+        <div key={i}><span className="font-mono text-slate-400">{a.agent}</span> {a.text}</div>
+      ))}
+    </div>
+  );
+}
+```
+
+In `ConversationView/index.tsx`: render `<CheckpointBubble need={awaitingInput} onAnswer={...} />` whenever `awaitingInput != null` (any phase); `onAnswer` posts the choice via `api.sendMessage(run_id, choice)` then `clearAwaitingInput()`. In `PipelineProgress/index.tsx`: render `<ActivityFeed />`.
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `cd frontend ; npx vitest run src/components/__tests__/CheckpointBubble.test.tsx`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add frontend/src/components
+git commit -m "feat(fe): CheckpointBubble + ActivityFeed"
+```
+
+---
+
+### Task 42: `send_message` resumes a suspended run
+
+The real router function is `send_message(run_id, body)` (Task 24), which runs `_handle()` in a thread. We add a **`_resume(run_id, state, content, sse_emit)`** helper (testable synchronously) and branch to it at the top of `_handle` when `state.awaiting_input` is set. Resume must re-invoke agents with their **real** signatures (reloading `eda_report`/`domain_context_pack` from disk and reconstructing the `FoundryRunGuard` seeded from `foundry_calls_total`), and be **answer-aware**: `relax_target` promotes a `USER_DECISION` to a loop-back.
+
+**Files:**
+- Modify: `backend/forecasting/api/routers/message.py`
+- Create: `tests/test_message_resume.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# tests/test_message_resume.py
+import json
+from unittest.mock import patch
+from forecasting.run_state import create_run_state, load_run_state, save_run_state, run_dir
+from forecasting.contracts import AgentNeed, AwaitingInput
+from forecasting.api.routers.message import _resume
+
+
+def _suspend(run_id, agent, kind, options):
+    s = create_run_state(run_id, domain="fmcg")
+    s.phase = "foundry_modelling"
+    s.awaiting_input = AwaitingInput(
+        need=AgentNeed(agent=agent, kind=kind, question="?", options=options, context={}),
+        raised_at="2026-05-31T00:00:00+00:00")
+    save_run_state(s)
+    d = run_dir(run_id); d.mkdir(parents=True, exist_ok=True)
+    (d / "eda_report.json").write_text(json.dumps({"run_id": run_id, "segments": []}))
+    (d / "domain_context_pack.json").write_text(json.dumps(
+        {"run_id": run_id, "segments": [], "forecast_scope": {"horizon": 4}}))
+    return load_run_state(run_id)
+
+
+def test_user_decision_resumes_same_agent(run_id, tmp_outputs):
+    state = _suspend(run_id, "foundry", "USER_DECISION", ["drop", "accept_caution"])
+    with patch("forecasting.api.routers.message.run_foundry") as rf:
+        _resume(run_id, state, content="accept_caution", sse_emit=lambda *a: None)
+    assert load_run_state(run_id).awaiting_input is None
+    rf.assert_called_once()
+
+
+def test_relax_target_promotes_to_loopback(run_id, tmp_outputs):
+    state = _suspend(run_id, "foundry", "USER_DECISION", ["drop", "relax_target"])
+    with patch("forecasting.api.routers.message.run_meridian") as rm, \
+         patch("forecasting.api.routers.message.run_foundry") as rf:
+        _resume(run_id, state, content="relax_target", sse_emit=lambda *a: None)
+    rm.assert_called_once()          # routed to Meridian (amend mase_target)
+    rf.assert_not_called()
+    assert load_run_state(run_id).phase == "meridian_scoping"
+
+
+def test_scope_amendment_loops_back(run_id, tmp_outputs):
+    state = _suspend(run_id, "forge", "SCOPE_AMENDMENT", ["confirm", "ignore"])
+    with patch("forecasting.api.routers.message.run_meridian") as rm:
+        _resume(run_id, state, content="confirm", sse_emit=lambda *a: None)
+    rm.assert_called_once()
+    assert load_run_state(run_id).loopback_count == 1
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_message_resume.py -v`
+Expected: FAIL — `ImportError: cannot import name '_resume'`.
+
+- [ ] **Step 3: Implement `_resume` and wire it into `_handle`**
+
+Add to `api/routers/message.py`:
+
+```python
+import json as _json
+from forecasting.run_state import run_dir
+from forecasting.guard import FoundryRunGuard
+from forecasting.tools.conductor_tools import resolve_need, reroute
+from forecasting.agents.foundry import run_foundry
+from forecasting.agents.forge import run_forge
+
+# run_meridian is already imported in this module (Task 24)
+
+_AMENDMENT_ANSWERS = {"relax_target"}   # USER_DECISION answers that promote to a loop-back
+
+
+def _resume(run_id: str, state, content: str, sse_emit) -> None:
+    need = state.awaiting_input.need
+    pack_path = run_dir(run_id) / "domain_context_pack.json"
+    bundle_path = run_dir(run_id) / "preflight.json"
+    pack = _json.loads(pack_path.read_text()) if pack_path.exists() else {}
+
+    # SCOPE_AMENDMENT, or a USER_DECISION whose answer edits scope → loop back to Meridian
+    if need.kind == "SCOPE_AMENDMENT" or content in _AMENDMENT_ANSWERS:
+        reroute(run_id, target_phase="meridian_scoping", reason=content)   # clears awaiting_input
+        bundle = _json.loads(bundle_path.read_text())["bundle"] if bundle_path.exists() else {}
+        run_meridian(run_id, content, [], bundle, 0, sse_emit)
+        return
+
+    # Ordinary USER_DECISION → resume the SAME agent (idempotent re-invocation)
+    resolve_need(run_id, answer=content)                                   # clears awaiting_input
+    eda_path = run_dir(run_id) / "eda_report.json"
+    eda = _json.loads(eda_path.read_text()) if eda_path.exists() else {}
+    if need.agent == "foundry":
+        fg = FoundryRunGuard(run_id=run_id)
+        fg.count = state.foundry_calls_total          # seed cumulative count
+        run_foundry(run_id, eda, pack, 0, sse_emit, fg)
+    elif need.agent == "forge":
+        run_forge(run_id, pack, 0, sse_emit)
+```
+
+Then at the top of `_handle()` (inside `send_message`), before the Lens→Conductor block:
+
+```python
+        current_state = load_run_state(run_id)
+        if current_state.awaiting_input is not None:
+            _resume(run_id, current_state, body.content, sse_emit)
+            return
+```
+
+- [ ] **Step 4: Run — expect pass + full suite**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_message_resume.py -v`
+Then: `c:/Agent_A/venv/Scripts/python -m pytest tests/ -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/api/routers/message.py tests/test_message_resume.py
+git commit -m "feat: send_message resumes suspended runs (answer-aware: resolve vs loop-back)"
+```
+
+---
+
+### Task 43: Re-lock the amended pack after a loop-back (`pack_version++` + affected-slice re-run)
+
+After a loop-back, Meridian amends the pack and the user re-confirms. The existing `confirm_pack_and_advance` rejects a re-confirm (`pack_confirmed` is already `True`) and never bumps `pack_version`. This task adds the re-lock path: bump `pack_version`, re-run only the `pending_amendment` series in place (main namespace), advance back to `foundry_modelling`, and clear the amendment.
+
+**Files:**
+- Modify: `backend/forecasting/tools/conductor_tools.py`
+- Modify: `tests/test_conductor.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_conductor.py  (add)
+from unittest.mock import patch
+from forecasting.tools.conductor_tools import relock_after_amendment, confirm_pack_and_advance
+from forecasting.run_state import create_run_state, load_run_state, save_run_state
+
+
+def test_relock_bumps_version_and_reruns(run_id, tmp_outputs):
+    s = create_run_state(run_id, domain="fmcg")
+    s.phase = "meridian_scoping"; s.pack_confirmed = True
+    s.pending_amendment = {"series_keys": ["SKU_A|NORTH"]}
+    save_run_state(s)
+    with patch("forecasting.tools.prism_tools.rerun_affected_series") as rr:
+        relock_after_amendment(run_id)
+    st = load_run_state(run_id)
+    assert st.pack_version == 1
+    assert st.pending_amendment is None
+    assert st.phase == "foundry_modelling"
+    rr.assert_called_once()
+
+
+def test_confirm_delegates_to_relock_during_loopback(run_id, tmp_outputs):
+    s = create_run_state(run_id, domain="fmcg")
+    s.phase = "meridian_scoping"; s.pack_confirmed = True
+    s.pending_amendment = {"series_keys": ["SKU_A|NORTH"]}
+    save_run_state(s)
+    with patch("forecasting.tools.prism_tools.rerun_affected_series"):
+        confirm_pack_and_advance(run_id)            # would normally raise (already confirmed)
+    assert load_run_state(run_id).pack_version == 1
+```
+
+- [ ] **Step 2: Run — expect failure**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_conductor.py -k "relock or delegates" -v`
+Expected: FAIL — `ImportError: cannot import name 'relock_after_amendment'` (and `confirm_pack_and_advance` raises on the already-confirmed pack).
+
+- [ ] **Step 3: Implement re-lock + delegate**
+
+Add to `conductor_tools.py`:
+
+```python
+def relock_after_amendment(run_id: str) -> dict:
+    """Re-lock after a loop-back amendment: bump pack_version, re-run only the affected
+    series in place (main namespace), advance to foundry_modelling, clear the amendment."""
+    state = load_run_state(run_id)
+    amendment = state.pending_amendment or {}
+    affected = amendment.get("series_keys") or amendment.get("series") or []
+    state.pack_version += 1
+    state.pending_amendment = None
+    state.phase = "foundry_modelling"
+    save_run_state(state)
+    from forecasting.tools.prism_tools import rerun_affected_series
+    rerun_affected_series(run_id, namespace=run_id, series_keys=affected,
+                          run_forge=True, run_foundry=True)
+    return {"relocked": True, "pack_version": state.pack_version, "reran": affected}
+```
+
+At the **top** of `confirm_pack_and_advance`, before the existing `pack_confirmed` guard, delegate when this is a loop-back re-confirm:
+
+```python
+    state = load_run_state(run_id)
+    if state.pack_confirmed and state.pending_amendment is not None:
+        return relock_after_amendment(run_id)
+    # ... existing first-confirmation logic unchanged ...
+```
+
+- [ ] **Step 4: Run — expect pass**
+
+Run: `c:/Agent_A/venv/Scripts/python -m pytest tests/test_conductor.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add backend/forecasting/tools/conductor_tools.py tests/test_conductor.py
+git commit -m "feat: loop-back re-lock — pack_version++ + affected-slice re-run"
+```
+
+---
+
+> **Phase G coverage** (vs ADR-0005 / the Agentic Interaction Layer in `docs/specs/spec.md`): Need mechanism → 32/35/36; resume = idempotent re-invocation (real agent signatures, reload artifacts, reconstruct FoundryRunGuard) → 36 + 42; single-outstanding + batched → 38; two triggers → 38; Conductor-voices-USER_DECISION / Meridian-voices-SCOPE_AMENDMENT → 37/42; `relax_target` promotes USER_DECISION → loop-back → 42; loop-back minimal slice + shared namespaced engine + bounded → 34/37/38; loop-back re-lock + `pack_version++` (`pending_amendment` set in 37, consumed in 43) → 43; narration → 36; persisted budgets → 33/35; SSE stream closes on suspend → 39; frontend bubble + feed → 40/41. Pause ≠ Halt enforced by Task 36 (return, not raise) + Task 32 (distinct exception). AgentGuardState uses `agent_name` (no `run_id`) — call sites reconciled.
 
 ---
 

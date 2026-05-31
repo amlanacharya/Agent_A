@@ -109,12 +109,34 @@ _Avoid_: Retry loop, fallback, model search
 ### Guard & Safety
 
 **Halt**:
-Any condition that terminates a Run before `report_ready`. Raised either by the Guard Layer (token budget exceeded, duplicate tool call detected, max tool calls reached) or by Conductor (open risks unacknowledged, agent failed). Halt reason is recorded in `run_summary.json` and surfaced via the `error` SSE event. A halted Run is terminal — it cannot be resumed; the user must start a new Run.
+Any condition that terminates a Run before `report_ready`. Raised either by the Guard Layer (token budget exceeded, duplicate tool call detected, max tool calls reached, loop-back cap exceeded) or by Conductor (open risks unacknowledged, agent failed). Halt reason is recorded in `run_summary.json` and surfaced via the `error` SSE event. **Terminal** — a halted Run cannot be resumed; the user must start a new Run. Distinct from a Pause, which is resumable.
 _Avoid_: Error, failure, abort, stop
+
+**Pause**:
+A *non-terminal* suspension of a Run while it waits for human input, triggered when an agent raises an Agent Need. The Run holds at its current phase (`awaiting input`) and resumes when the user answers — nothing is reset and no work is discarded. The opposite of a Halt: a Halt ends a Run, a Pause merely waits.
+_Avoid_: Stop, block, halt, freeze
 
 **Guard Layer**:
 Shared enforcement layer applied to every tool call across all agents. Checks token budget, per-agent tool call limits, and duplicate call detection before dispatching. Raises `GuardHalt` (a Python exception) when any limit is exceeded. Not an agent — purely deterministic Python. All limits (token budget, max tool calls per agent, duplicate call threshold) are `.env`-configurable; values in plan_v1.md are defaults only.
 _Avoid_: Safety layer, rate limiter, budget checker
+
+### Agentic Interaction
+
+**Agent Need**:
+A structured request an agent raises (`raise_need`) when it hits a decision it should not make alone, triggering a Pause. Carries a `kind`, a question, candidate options, and supporting context. Two kinds: a **User Decision** (a quick choice the Conductor puts to the user) and a **Scope Amendment** (a change to the confirmed scope, handled by Meridian via a Loop-back). Raised sparingly — only when no defensible default exists.
+_Avoid_: Prompt, interrupt, request, ask
+
+**Checkpoint**:
+The moment a Run pauses on an Agent Need and surfaces a question to the user. A Checkpoint is how "the agents take human input when required" — distinct from Meridian's ongoing scoping conversation, which is dialogue rather than a suspension.
+_Avoid_: Gate, stop point, approval step
+
+**Loop-back**:
+Conductor routing a Scope Amendment back to Meridian, which amends the confirmed Domain Context Pack, re-locks it (a new pack version), and re-runs only the affected series. Bounded — a Run may only loop back a limited number of times before it Halts. This is why the Run lifecycle is not strictly linear.
+_Avoid_: Rollback, rewind, retry, revision
+
+**Agent Narration**:
+The plain-language reasoning an agent emits as it works (which segment it is starting, why it is escalating a model, what it just found), streamed to the user as a live activity feed. How the user perceives the system as reasoning rather than as a progress bar. Always decisions and findings — never raw tool output.
+_Avoid_: Log, trace, commentary, output
 
 ### Domain & Configuration
 
@@ -171,7 +193,7 @@ _Avoid_: Pack generation, pack creation, pack output
 ### Session & Lifecycle
 
 **Run**:
-The top-level unit of work — one CSV upload, one conversation arc, one output report. Has a lifecycle: `preflight → meridian_scoping → forge_eda → foundry_modelling → report_ready`.
+The top-level unit of work — one CSV upload, one conversation arc, one output report. Lifecycle phases: `preflight → meridian_scoping → forge_eda → foundry_modelling → report_ready`. The progression is **not strictly linear**: a Run may Pause for a Checkpoint at any phase, and a Loop-back can move it backward (e.g. `foundry_modelling → meridian_scoping`) to amend scope before continuing.
 _Avoid_: Session, job, task, execution
 
 **Scenario Run**:

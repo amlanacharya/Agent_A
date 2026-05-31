@@ -57,6 +57,8 @@ React frontend
 
 **Data never travels through Claude's context.** Series data is stored in `data_store` on upload. All agents receive `run_id` and call tools that read from `data_store` internally. The sentinel pattern applies to all agents.
 
+**The flow is a loop, not a chain.** The arrows above are the happy path, but any domain agent can pause the Run for human input (an Agent Need → Checkpoint) and the Conductor can route a Scope Amendment *backward* to Meridian (a Loop-back) before continuing. Agents also narrate their reasoning as they work, streamed live. So post-confirmation is a supervised agent loop with human checkpoints — not a silent pipeline. See ADR-0005; CONTEXT 'Agent Need', 'Pause', 'Loop-back', 'Agent Narration'.
+
 ---
 
 ## 4. Lens — Intent Agent
@@ -106,17 +108,24 @@ RunState = {
     "phase":                   Literal["preflight", "meridian_scoping", "forge_eda",
                                        "foundry_modelling", "report_ready"],
     "pack_confirmed":          bool,
+    "pack_version":            int,         # bumped on every scope amendment (loop-back)
     "meridian_turn_count":     int,
     "forge_complete":          bool,
     "foundry_complete":        bool,
     "active_whatif_runs":      list[str],   # whatif_ids
     "open_risks":              int,         # count of unacknowledged risks only
     "override_count":          int,
+    "awaiting_input":          dict | None, # AgentNeed payload when paused; None when running
+    "loopback_count":          int,         # scope-amendment loop-backs so far (capped)
+    "tokens_used_total":       int,         # cumulative — persists across pause/resume
+    "foundry_calls_total":     int,         # cumulative Foundry tool calls — persists across pause/resume
     "halt_reason":             str | None,
     "domain":                  str,
     "created_at":              str          # ISO timestamp
 }
 ```
+
+`awaiting_input`, `loopback_count`, `tokens_used_total`, and `foundry_calls_total` exist because a Pause resumes by *re-invoking* the agent (it skips already-done steps via persisted artifacts); the cumulative counters must live here and be seeded/written-back per invocation, or resume would silently reset the Guard. See §13 and ADR-0005.
 
 `open_risks` counts only unacknowledged risks — a risk is closed when the user explicitly acknowledges it (becomes `ACCEPTED_RISK` Claim) or Meridian resolves it via subsequent diagnostic evidence.
 
@@ -153,7 +162,22 @@ surface_clarification(run_id, message)
 
 log_halt(run_id, reason)
     → writes halt to obs log, pushes error SSE event
+
+resolve_need(run_id, answer)
+    → consumes the user's answer to the current awaiting_input AgentNeed:
+      • USER_DECISION  → clears awaiting_input, resumes the SAME agent (which re-invokes,
+                         skips completed steps, and records the outcome itself)
+      • SCOPE_AMENDMENT → routes to Meridian (a loop-back); see reroute
+    → only callable when awaiting_input != None
+
+reroute(run_id, target_phase, reason)
+    → moves phase backward for a scope amendment (e.g. foundry_modelling → meridian_scoping),
+      increments loopback_count, bumps pack_version on re-lock
+    → after Meridian re-locks the amended pack, only the affected series are re-run
+      (reuses Prism's affected-series engine on the main namespace)
 ```
+
+**Agentic interaction (Needs / Pauses / Loop-back).** Any domain agent may call `raise_need(kind, question, options, context)` when it hits a decision with no defensible default. This raises a resumable `PauseForInput`, writes the need to `awaiting_input`, emits `agent_needs_input`, and suspends the Run (non-terminal — *not* a Halt). Conductor routes by `kind`: `USER_DECISION` it voices itself (an extension of `surface_clarification`); `SCOPE_AMENDMENT` it routes to Meridian via `reroute`. Checkpoints are rare by design — agents take a documented default and log a Claim wherever one exists. See ADR-0005.
 
 **Conductor hard rules (enforced in system prompt):**
 - Never call `confirm_pack_and_advance` if `open_risks > 0` and user has not acknowledged risks
@@ -161,6 +185,9 @@ log_halt(run_id, reason)
 - Never call `create_prism_run` before `phase = report_ready`
 - If `intent.confidence < 0.6`, call `surface_clarification` — do not guess
 - A Halt is terminal — never attempt to resume a halted run
+- When `awaiting_input != None`, the only valid action is `resolve_need` — do not advance or re-route otherwise; a free-text answer is classified by Lens first
+- Never exceed the loop-back cap (`loopback_count`, default 3, `.env`) — the Guard Halts the run if it would
+- A loop-back is a *scoped* amendment to the specific finding — never reopen general scoping
 
 **Conductor output is not streamed.** Its routing decisions surface via `phase_change` and `decision_update` SSE events only. Users never see Conductor's tool call trace.
 
@@ -302,6 +329,8 @@ compile_eda_report(run_id)
     → writes to outputs/{run_id}/eda_report.json
 ```
 
+**Checkpoint (Agent Need):** if Forge detects a *strong structural break that is not in the pack's confirmed set*, it does not silently ignore it (silence ≠ confirm) — it calls `raise_need(kind="SCOPE_AMENDMENT", …)`, pausing the Run so Meridian can put the break to the user. All other forks (e.g. <2 post-break folds) take their documented default — flag `caution`, log a Claim — and do not pause. Forge **narrates** its work (`agent_reasoning`) as it goes.
+
 **Max tool calls:** default 20, `.env`-configurable.
 
 ---
@@ -350,7 +379,9 @@ compile_foundry_report(run_id)
 - `caution` — modellable but carries known risk (marginal history, high CV², ACCEPTED_RISK Claim, or insufficient post-break folds); can be assigned pre-modelling by Meridian/Forge or post-modelling by Foundry
 - `unforecastable` — all self-correction rounds exhausted, `assess_target_feasibility` confirmed theoretical floor exceeds target
 
-**Max tool calls:** guard layer manages cumulative Foundry tool calls per run against `max_tool_calls_foundry` (default 500, `.env`-configurable).
+**Checkpoint (Agent Need):** after its deterministic pass, Foundry **batches** all series that fell short of the MASE target (after self-correction) into a single `raise_need(kind="USER_DECISION", …)` — *"N series fell short — drop / relax target / accept as caution?"* — never one pause per series. Picking *relax target* promotes it to a `SCOPE_AMENDMENT` (it edits `mase_target`). On resume, Foundry re-invokes, skips completed series, and records the chosen outcome. Foundry **narrates** (`agent_reasoning`) per segment / self-correction escalation.
+
+**Max tool calls:** guard layer manages cumulative Foundry tool calls per run against `max_tool_calls_foundry` (default 500, `.env`-configurable). The counter is per-run **persisted** in Run State (`foundry_calls_total`) so it survives pause/resume — see §13.
 
 ---
 
@@ -470,12 +501,14 @@ App
 │   └── RunCard (× N)
 ├── MainPanel
 │   ├── PhaseBar
-│   ├── ConversationView          ← active during meridian_scoping
+│   ├── ConversationView          ← meridian_scoping, AND whenever awaiting_input != None
 │   │   ├── MessageBubble
-│   │   └── StreamingBubble
+│   │   ├── StreamingBubble
+│   │   └── CheckpointBubble       ← renders an Agent Need: question + options[] as buttons
 │   ├── PipelineProgress          ← active during forge_eda + foundry_modelling
 │   │   ├── ForgeProgress
-│   │   └── FoundryProgress
+│   │   ├── FoundryProgress
+│   │   └── ActivityFeed           ← live agent_reasoning narration
 │   ├── ReportSummary             ← shown when phase = report_ready
 │   │   ├── TechnicalView         ← MASE, fold ranges, self-correction, model reasoning
 │   │   ├── BusinessView          ← plain language, MAPE translation, open risks
@@ -511,10 +544,12 @@ App
 | `phase_change` | `{ phase: str }` | runStore.phase, PhaseBar re-renders |
 | `forge_progress` | `{ segment_id, status: "pending"\|"running"\|"done" }` | ForgeProgress |
 | `foundry_progress` | `{ done: int, total: int, by_segment: dict }` | FoundryProgress |
+| `agent_reasoning` | `{ agent: str, text: str }` | append to PipelineProgress activity feed |
+| `agent_needs_input` | `{ agent, kind, question, options: list, context }` | set `awaiting_input`; render checkpoint bubble in ConversationView |
 | `pipeline_done` | `{ forecastable, caution, unforecastable }` | show ReportSummary |
 | `error` | `{ reason: str, halt_reason: str }` | error state |
 
-Conductor's tool call trace is never streamed — routing decisions surface as `phase_change` and `decision_update` events only.
+Conductor's tool call trace is never streamed — routing decisions surface as `phase_change` and `decision_update` events only. `agent_reasoning` carries only plain-language decisions/findings from domain agents (Forge/Foundry/Prism/Meridian), never raw tool JSON; Conductor never narrates.
 
 ---
 
@@ -524,9 +559,11 @@ Shared across all agents. Enforced in the tool dispatcher. All limits `.env`-con
 
 - **Token budget:** 80,000 tokens per run (default). Checked before each API call.
 - **Max tool calls:** 20 per agent invocation for Conductor, Meridian, Forge, and Prism (default). Foundry is exempt — cumulative Foundry tool calls tracked per run against `max_tool_calls_foundry` (default 500).
-- **Duplicate call detection:** MD5 hash of `(tool_name, json.dumps(args, sort_keys=True))`. Hard stop after 2 identical calls (default).
+- **Duplicate call detection:** MD5 hash of `(tool_name, json.dumps(args, sort_keys=True))`. Hard stop after 2 identical calls (default). Tracked per agent *invocation*; safe across resume because re-invocation short-circuits already-done steps via artifacts rather than re-dispatching them.
+- **Loop-back cap:** `loopback_count` (default 3, `.env`). A scope-amendment loop-back that would exceed it raises `GuardHalt`.
+- **Cumulative budgets persist in Run State:** `tokens_used_total` and `foundry_calls_total` live in `run_state.json`, seeded and written back on every (re-)invocation — so a Pause/resume (or restart) cannot reset a budget. The Foundry counter is therefore per-run *persisted*, not just a per-instance field (refines the per-run fix).
 - **Sentinel pattern:** Series data in `data_store` only. Tools receive `run_id`. Series never in Claude's context.
-- **Halt is terminal:** A `GuardHalt` (Python exception) or Conductor `log_halt` ends the Run permanently. Cannot be resumed. Halt reason written to `run_state.json` and surfaced via `error` SSE event.
+- **Pause ≠ Halt:** `PauseForInput` (raised by `raise_need`) suspends the Run *non-terminally* — it is resumable and resets nothing. `GuardHalt` (or Conductor `log_halt`) ends the Run permanently and cannot be resumed; halt reason written to `run_state.json` and surfaced via `error` SSE event.
 
 ---
 
@@ -681,6 +718,7 @@ C:\Agent_A\                         ← code/dir (product name is "Agent P")
 - LLM-as-judge eval framework for Meridian conversation quality
 - Golden conversation regression tests
 - Async FastAPI handlers (sync is fine for POC)
+- Mid-tool-call interruption / true preemption (deferred "lever 4"). Agents pause only at Need checkpoints; the user interjects at turn boundaries, not mid-call. Revisit if real-time interruption becomes necessary (would require async). See ADR-0005.
 - Mobile / responsive layout
 - Dark mode
 - MCP tool servers (revisit Phase 2 if tool surface grows)
