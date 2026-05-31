@@ -1,0 +1,5 @@
+# Lens uses pipeline_state as a strong prior for classifying short ambiguous messages
+
+Lens receives `pipeline_state` and the last 6 conversation turns as part of its input on every call. For short or ambiguous messages (e.g., "ok", "yes", "fine"), the current phase and the last agent message are weighted heavily in the system prompt to resolve intent — e.g., "ok" after a risk warning is `SCOPE_RESPONSE`, "ok" after a proceed-to-modelling question is `ADVANCE_PIPELINE`.
+
+The alternative was a separate Conductor disambiguation step that would re-prompt the user when a message was below a length threshold. We rejected this because it adds a round-trip for messages that are actually unambiguous given context, creating unnecessary friction in the conversation flow. The 0.6 confidence threshold already handles genuine ambiguity — the fix is better use of available context, not an extra layer.
