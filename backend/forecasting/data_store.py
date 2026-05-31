@@ -13,12 +13,12 @@ class SeriesNotFoundError(Exception):
 
 
 def store_series(run_id: str, series_key: str, df: pd.DataFrame) -> None:
-    _store.setdefault(run_id, {})[series_key] = df
+    _store.setdefault(run_id, {})[series_key] = df.copy(deep=True)
 
 
 def get_series(run_id: str, series_key: str) -> pd.DataFrame:
     try:
-        return _store[run_id][series_key]
+        return _store[run_id][series_key].copy(deep=True)
     except KeyError:
         raise SeriesNotFoundError(run_id, series_key)
 
