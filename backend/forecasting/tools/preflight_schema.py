@@ -102,7 +102,7 @@ def build_series_keys(df: pd.DataFrame, schema: SchemaMapping, playbook: dict) -
     grain_cols = schema.grain_cols
 
     if grain_cols:
-        for group_keys, sub_df in df.groupby(grain_cols):
+        for group_keys, sub_df in df.groupby(grain_cols, dropna=False):
             if not isinstance(group_keys, tuple):
                 group_keys = (group_keys,)
             key = _normalise_key(group_keys)
@@ -159,7 +159,10 @@ def _find_demand_col(df: pd.DataFrame) -> str | None:
 def _normalise_key(values: tuple) -> str:
     parts = []
     for value in values:
-        normalized = str(value).upper().replace(" ", "_")
+        if pd.isna(value):
+            normalized = "NULL"
+        else:
+            normalized = str(value).upper().replace(" ", "_")
         normalized = re.sub(r"[^A-Z0-9_]", "", normalized)
         parts.append(normalized)
     return "|".join(parts)

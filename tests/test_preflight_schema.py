@@ -135,6 +135,24 @@ def test_build_series_keys_collision_safe():
     assert all("|" in key for key in series_map)
 
 
+def test_build_series_keys_preserves_null_grain_rows():
+    df = pd.DataFrame(
+        {
+            "week": ["2024-W01", "2024-W01", "2024-W02"],
+            "sku": ["A", None, "A"],
+            "region": ["NORTH", "NORTH", "NORTH"],
+            "demand": [1.0, 2.0, 3.0],
+        }
+    )
+    schema = map_schema(df, PLAYBOOK)
+    series_map = build_series_keys(df, schema, PLAYBOOK)
+
+    assert sum(len(s) for s in series_map.values()) == len(df)
+    assert "NULL|NORTH" in series_map
+    assert all(key == key.upper() for key in series_map)
+    assert all("|" in key for key in series_map)
+
+
 def test_parse_dates_supports_iso_week_as_monday():
     parsed = _parse_dates(pd.Series(["2024-W01", "2024-W02"]))
     assert parsed.notna().all()
