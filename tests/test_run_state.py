@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 from forecasting.run_state import (
     HaltedRunError,
     Phase,
@@ -52,3 +53,33 @@ def test_phase_transitions(run_id, tmp_outputs):
     state.phase = Phase.MERIDIAN_SCOPING
     save_run_state(state)
     assert load_run_state(run_id).phase == Phase.MERIDIAN_SCOPING
+
+
+def test_halted_run_is_immutable_after_persist(run_id, tmp_outputs):
+    state = create_run_state(run_id, domain="fmcg")
+    state.halt_reason = "manual halt"
+    state.phase = Phase.HALTED
+    save_run_state(state)
+
+    halted_state = load_run_state(run_id)
+    halted_state.override_count = 99
+
+    with pytest.raises(HaltedRunError):
+        save_run_state(halted_state)
+
+    reloaded = load_run_state(run_id)
+    assert reloaded.phase == Phase.HALTED
+    assert reloaded.halt_reason == "manual halt"
+    assert reloaded.override_count == 0
+
+
+def test_invalid_phase_assignment_raises(run_id, tmp_outputs):
+    state = create_run_state(run_id, domain="fmcg")
+    with pytest.raises(ValidationError):
+        state.phase = "not_a_phase"
+
+
+@pytest.mark.parametrize("bad_run_id", ["../escape", "nested/run", "nested\\run"])
+def test_create_run_state_rejects_unsafe_run_id(bad_run_id, tmp_outputs):
+    with pytest.raises(ValueError):
+        create_run_state(bad_run_id, domain="fmcg")

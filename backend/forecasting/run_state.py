@@ -32,7 +32,7 @@ class RunState(BaseModel):
     domain: str
     created_at: str
 
-    model_config = ConfigDict(use_enum_values=True)
+    model_config = ConfigDict(use_enum_values=True, validate_assignment=True)
 
 
 class RunNotFoundError(Exception):
@@ -48,6 +48,14 @@ class HaltedRunError(Exception):
 
 
 def run_dir(run_id: str) -> Path:
+    if (
+        not run_id
+        or Path(run_id).is_absolute()
+        or "/" in run_id
+        or "\\" in run_id
+        or run_id in {".", ".."}
+    ):
+        raise ValueError("run_id must be a single safe path segment")
     return OUTPUTS_ROOT / run_id
 
 
@@ -78,5 +86,9 @@ def save_run_state(state: RunState) -> None:
     if state.phase == Phase.HALTED and state.halt_reason is None:
         raise ValueError("halt_reason must be set before saving a HALTED RunState")
     path = state_path(state.run_id)
+    if path.exists():
+        existing = RunState.model_validate_json(path.read_text())
+        if existing.phase == Phase.HALTED:
+            raise HaltedRunError(state.run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(state.model_dump_json(indent=2))
