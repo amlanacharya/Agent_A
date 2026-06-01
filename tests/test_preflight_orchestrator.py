@@ -3,7 +3,7 @@ import json
 import pytest
 
 from forecasting.data_store import get_series_keys
-from forecasting.preflight import PreflightBlockingError, _parse_csv, run_preflight
+from forecasting.preflight import PreflightBlockingError, run_preflight
 
 PLAYBOOK = {
     "common_grains": ["sku", "region"],
@@ -44,9 +44,9 @@ def test_preflight_blocks_all_zero(run_id, tmp_outputs):
     assert "ALL_ZERO_DEMAND" in str(exc_info.value)
 
 
-def test_parse_csv_raises_blocking_error_on_unparseable_file():
+def test_preflight_blocks_corrupt_file(run_id, tmp_outputs):
     with pytest.raises(PreflightBlockingError) as exc_info:
-        _parse_csv(b"\x00\x01\x02corrupted")
+        run_preflight(run_id, b"\x00\x01\x02corrupted", domain="fmcg", playbook=PLAYBOOK)
     assert any(i.code == "UNPARSEABLE_FILE" for i in exc_info.value.issues)
     assert "UNPARSEABLE_FILE" in str(exc_info.value)
 
