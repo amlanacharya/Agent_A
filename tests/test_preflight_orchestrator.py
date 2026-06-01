@@ -1,8 +1,9 @@
 import json
+from pathlib import Path
 
 import pytest
 
-from forecasting.data_store import get_series_keys
+from forecasting.data_store import get_series_keys, replace_run
 from forecasting.preflight import PreflightBlockingError, run_preflight
 
 PLAYBOOK = {
@@ -16,6 +17,11 @@ PLAYBOOK = {
 
 def _csv(n_weeks: int = 12) -> bytes:
     rows = [f"2024-W{w + 1:02d},{sku},NORTH,{float(w + 1)}" for sku in ["SKU_A", "SKU_B"] for w in range(n_weeks)]
+    return ("week,sku,region,demand\n" + "\n".join(rows)).encode()
+
+
+def _csv_for_skus(skus: list[str], n_weeks: int = 12) -> bytes:
+    rows = [f"2024-W{w + 1:02d},{sku},NORTH,{float(w + 1)}" for sku in skus for w in range(n_weeks)]
     return ("week,sku,region,demand\n" + "\n".join(rows)).encode()
 
 
@@ -62,3 +68,29 @@ def test_preflight_adds_short_history_warning(run_id, tmp_outputs):
     playbook = {**PLAYBOOK, "min_history_periods": 30}
     bundle = run_preflight(run_id, _csv(n_weeks=12), domain="fmcg", playbook=playbook)
     assert any(w.code == "SHORT_HISTORY" for w in bundle.data_quality_report.warnings)
+
+
+def test_preflight_rerun_replaces_series_for_same_run_id(run_id, tmp_outputs):
+    run_preflight(run_id, _csv_for_skus(["SKU_A", "SKU_B"]), domain="fmcg", playbook=PLAYBOOK)
+    run_preflight(run_id, _csv_for_skus(["SKU_Z"]), domain="fmcg", playbook=PLAYBOOK)
+    assert set(get_series_keys(run_id)) == {"SKU_Z|NORTH"}
+
+
+def test_preflight_write_failure_keeps_store_untouched(run_id, tmp_outputs, monkeypatch):
+    replace_run(run_id, {"EXISTING|NORTH": json_to_df("2024-01-01", 5.0)})
+
+    def _boom(self, target):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(Path, "replace", _boom)
+
+    with pytest.raises(OSError, match="simulated write failure"):
+        run_preflight(run_id, _csv_for_skus(["SKU_NEW"]), domain="fmcg", playbook=PLAYBOOK)
+
+    assert set(get_series_keys(run_id)) == {"EXISTING|NORTH"}
+
+
+def json_to_df(date: str, demand: float):
+    import pandas as pd
+
+    return pd.DataFrame({"date": [date], "demand": [demand]})

@@ -16,6 +16,10 @@ def store_series(run_id: str, series_key: str, df: pd.DataFrame) -> None:
     _store.setdefault(run_id, {})[series_key] = df.copy(deep=True)
 
 
+def replace_run(run_id: str, series_map: dict[str, pd.DataFrame]) -> None:
+    _store[run_id] = {key: df.copy(deep=True) for key, df in series_map.items()}
+
+
 def get_series(run_id: str, series_key: str) -> pd.DataFrame:
     try:
         return _store[run_id][series_key].copy(deep=True)

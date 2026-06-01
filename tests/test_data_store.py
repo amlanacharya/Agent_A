@@ -7,6 +7,7 @@ from forecasting.data_store import (
     get_series,
     get_series_keys,
     key_to_filename,
+    replace_run,
     store_series,
 )
 
@@ -87,3 +88,24 @@ def test_keys_without_pipes_round_trip_unchanged():
     key = "SKUA_NORTH"
     assert key_to_filename(key) == key
     assert filename_to_key(key) == key
+
+
+def test_replace_run_replaces_old_keys(run_id):
+    store_series(run_id, "OLD|NORTH", make_df())
+    replace_run(
+        run_id,
+        {
+            "NEW_A|NORTH": pd.DataFrame({"date": ["2024-02-01"], "demand": [1.0]}),
+            "NEW_B|NORTH": pd.DataFrame({"date": ["2024-02-01"], "demand": [2.0]}),
+        },
+    )
+    assert set(get_series_keys(run_id)) == {"NEW_A|NORTH", "NEW_B|NORTH"}
+    with pytest.raises(SeriesNotFoundError):
+        get_series(run_id, "OLD|NORTH")
+
+
+def test_replace_run_defensive_copies(run_id):
+    src = {"SKU_A|NORTH": pd.DataFrame({"date": ["2024-03-01"], "demand": [10.0]})}
+    replace_run(run_id, src)
+    src["SKU_A|NORTH"].loc[0, "demand"] = 999.0
+    assert get_series(run_id, "SKU_A|NORTH")["demand"].iloc[0] == 10.0

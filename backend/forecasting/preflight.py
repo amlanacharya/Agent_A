@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import uuid
+from pathlib import Path
 
 import pandas as pd
 
 from forecasting.contracts import BlockingIssue, DataQualityWarning, PreflightBundle
-from forecasting.data_store import store_series
+from forecasting.data_store import replace_run
 from forecasting.run_state import run_dir
 from forecasting.tools.preflight_schema import (
     build_series_keys,
@@ -50,6 +52,7 @@ def _parse_csv(file_bytes: bytes) -> pd.DataFrame:
 
 def run_preflight(run_id: str, file_bytes: bytes, domain: str, playbook: dict) -> PreflightBundle:
     _ = domain
+    output_dir = run_dir(run_id)
     df = _parse_csv(file_bytes)
 
     quality = profile_uploaded_data(df)
@@ -70,9 +73,6 @@ def run_preflight(run_id: str, file_bytes: bytes, domain: str, playbook: dict) -
             )
         )
         raise PreflightBlockingError(quality.blocking_issues)
-
-    for key, series_df in series_map.items():
-        store_series(run_id, key, series_df)
 
     adi_cv2 = compute_adi_cv2_per_series(series_map)
     zero_runs = detect_zero_runs_per_series(series_map)
@@ -114,9 +114,8 @@ def run_preflight(run_id: str, file_bytes: bytes, domain: str, playbook: dict) -
         },
     }
 
-    output_dir = run_dir(run_id)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "preflight.json").write_text(json.dumps(output, indent=2))
+    _write_preflight_json_atomic(output_dir, output)
+    replace_run(run_id, series_map)
 
     return bundle
 
@@ -130,3 +129,16 @@ def _add_stat_warnings(quality, grain, playbook: dict) -> None:
                 message=f"Some series have fewer than {min_history_periods} periods (min={grain.min_periods})",
             )
         )
+
+
+def _write_preflight_json_atomic(output_dir: Path, payload: dict) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_path = output_dir / "preflight.json"
+    temp_path = output_dir / f".preflight.{uuid.uuid4().hex}.tmp"
+    try:
+        temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temp_path.replace(final_path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
