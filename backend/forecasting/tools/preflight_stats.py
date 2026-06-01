@@ -26,20 +26,12 @@ from forecasting.contracts import (
 def compute_adi_cv2_per_series(series_map: dict[str, pd.DataFrame]) -> dict[str, AdiCv2Stats]:
     result: dict[str, AdiCv2Stats] = {}
     for key, df in series_map.items():
-        demand = df["demand"].values.astype(float)
+        demand = _extract_numeric_demand(df, finite_only=True)
         non_zero = demand[demand > 0]
         if len(non_zero) == 0:
             result[key] = AdiCv2Stats(series_key=key, adi=999.0, cv2=0.0, sb_class="LUMPY")
             continue
-        intervals: list[int] = []
-        run = 0
-        for d in demand:
-            if d > 0:
-                intervals.append(run + 1)
-                run = 0
-            else:
-                run += 1
-        adi = float(np.mean(intervals)) if intervals else 1.0
+        adi = float(len(demand) / len(non_zero))
         mu = float(np.mean(non_zero))
         std = float(np.std(non_zero, ddof=1)) if len(non_zero) > 1 else 0.0
         cv2 = (std / mu) ** 2 if mu > 0 else 0.0
@@ -50,7 +42,7 @@ def compute_adi_cv2_per_series(series_map: dict[str, pd.DataFrame]) -> dict[str,
 def detect_zero_runs_per_series(series_map: dict[str, pd.DataFrame]) -> dict[str, ZeroRunStats]:
     result: dict[str, ZeroRunStats] = {}
     for key, df in series_map.items():
-        demand = df["demand"].values.astype(float)
+        demand = _extract_numeric_demand(df, finite_only=True)
         mask = demand == 0
         result[key] = ZeroRunStats(
             series_key=key,
@@ -63,7 +55,10 @@ def detect_zero_runs_per_series(series_map: dict[str, pd.DataFrame]) -> dict[str
 def detect_spikes_per_series(series_map: dict[str, pd.DataFrame]) -> dict[str, SpikeStats]:
     result: dict[str, SpikeStats] = {}
     for key, df in series_map.items():
-        demand = df["demand"].values.astype(float)
+        demand = _extract_numeric_demand(df, finite_only=True)
+        if len(demand) == 0:
+            result[key] = SpikeStats(series_key=key, spike_count=0, max_spike_ratio=0.0)
+            continue
         q1, q3 = np.percentile(demand, [25, 75])
         threshold = q3 + 3 * (q3 - q1)
         spikes = demand[demand > threshold]
@@ -75,7 +70,7 @@ def detect_spikes_per_series(series_map: dict[str, pd.DataFrame]) -> dict[str, S
 def detect_trend_strength(series_map: dict[str, pd.DataFrame]) -> dict[str, TrendStats]:
     result: dict[str, TrendStats] = {}
     for key, df in series_map.items():
-        demand = df["demand"].values.astype(float)
+        demand = _extract_numeric_demand(df, finite_only=True)
         nz_idx = np.where(demand > 0)[0]
         if len(nz_idx) < 3:
             result[key] = TrendStats(series_key=key, trend_strength=0.0, direction="flat")
@@ -95,7 +90,7 @@ def detect_trend_strength(series_map: dict[str, pd.DataFrame]) -> dict[str, Tren
 def detect_seasonality_strength(series_map: dict[str, pd.DataFrame]) -> dict[str, SeasonalityStats]:
     result: dict[str, SeasonalityStats] = {}
     for key, df in series_map.items():
-        demand = df["demand"].values.astype(float)
+        demand = _extract_numeric_demand(df, finite_only=True)
         best_str, best_per = 0.0, None
         for lag in [52, 12, 4]:
             if len(demand) > lag * 2:
@@ -124,7 +119,7 @@ def measure_promo_alignment(
 def detect_structural_break_candidates(series_map: dict[str, pd.DataFrame]) -> list[BreakCandidate]:
     candidates: list[BreakCandidate] = []
     for key, df in series_map.items():
-        demand = df["demand"].values.astype(float)
+        demand, finite_positions = _extract_numeric_demand(df, finite_only=True, return_positions=True)
         if len(demand) < 16:
             continue
         mu = demand.mean()
@@ -132,7 +127,11 @@ def detect_structural_break_candidates(series_map: dict[str, pd.DataFrame]) -> l
         idx = int(np.argmax(np.abs(cusum)))
         strength = abs(cusum[idx]) / (demand.std() + 1e-9)
         if strength > 3.0:
-            date_val = str(df["date"].iloc[idx]) if "date" in df.columns else str(idx)
+            if "date" in df.columns:
+                src_idx = int(finite_positions[idx])
+                date_val = str(df["date"].iloc[src_idx])
+            else:
+                date_val = str(idx)
             candidates.append(
                 BreakCandidate(
                     series_key=key,
@@ -171,8 +170,12 @@ def assign_provisional_segments(
 
     buckets: dict[tuple[Any, ...], list[str]] = defaultdict(list)
     for key in series_map.keys():
-        parts = dict(zip(schema.grain_cols, key.split("|")))
-        buckets[tuple(parts.get(c, "") for c in seg_by)].append(key)
+        key_parts = key.split("|")
+        parts = dict(zip(schema.grain_cols, key_parts[: len(schema.grain_cols)]))
+        bucket_key = tuple(parts.get(c, "") for c in seg_by)
+        if len(key_parts) > len(schema.grain_cols):
+            bucket_key = (*bucket_key, f"__key__={key}")
+        buckets[bucket_key].append(key)
 
     if len(buckets) > max_segments:
         return _single(f"default:single_segment (>{max_segments} groups)")
@@ -205,7 +208,7 @@ def aggregate_segment_profiles(
     resolved_segment_map = _coerce_segment_map(adi_cv2=adi_cv2, segment_map=segment_map)
     profiles: list[SegmentProfile] = []
     for seg in resolved_segment_map.segments:
-        keys = [k for k in seg.series_keys if k in adi_cv2]
+        keys = [k for k in seg.series_keys if k in adi_cv2 and k in series_map]
         dist: dict[str, int] = defaultdict(int)
         fc: dict[str, int] = defaultdict(int)
         adis: list[float] = []
@@ -219,12 +222,12 @@ def aggregate_segment_profiles(
         profiles.append(
             SegmentProfile(
                 segment_id=seg.segment_id,
-                series_count=len(seg.series_keys),
+                series_count=len(keys),
                 demand_class_distribution=dict(dist),
                 median_adi=round(float(np.median(adis)), 4) if adis else 0.0,
                 median_cv2=round(float(np.median(cv2s)), 4) if cv2s else 0.0,
                 forecastability_breakdown=dict(fc),
-                example_keys=seg.series_keys[:3],
+                example_keys=keys[:3],
             )
         )
     return profiles
@@ -315,3 +318,18 @@ def _autocorr(x: np.ndarray, lag: int) -> float:
     xn = x - x.mean()
     denom = np.dot(xn, xn)
     return float(np.dot(xn[: len(x) - lag], xn[lag:])) / denom if denom else 0.0
+
+
+def _extract_numeric_demand(
+    df: pd.DataFrame, finite_only: bool = True, return_positions: bool = False
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    raw = pd.to_numeric(df["demand"], errors="coerce")
+    arr = raw.to_numpy(dtype=float, copy=False)
+    if finite_only:
+        mask = np.isfinite(arr)
+    else:
+        mask = ~np.isnan(arr)
+    clean = arr[mask]
+    if return_positions:
+        return clean, np.flatnonzero(mask)
+    return clean
