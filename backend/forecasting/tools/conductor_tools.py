@@ -32,7 +32,8 @@ def update_run_state(run_id: str, patch: dict) -> dict:
     if patch.get("pack_confirmed") is False and state.pack_confirmed:
         raise ValueError("pack_confirmed is a one-way transition (False -> True only)")
 
-    updated = state.model_copy(update=patch)
+    merged = {**state.model_dump(mode="python"), **patch}
+    updated = type(state).model_validate(merged)
     save_run_state(updated)
     return updated.model_dump(mode="json")
 
@@ -101,7 +102,12 @@ def log_halt(run_id: str, reason: str, sse_emit: Callable) -> None:
 def _append_obs(path: Path, entry: dict) -> None:
     log = []
     if path.exists():
-        log = json.loads(path.read_text())
+        try:
+            loaded = json.loads(path.read_text())
+            if isinstance(loaded, list):
+                log = loaded
+        except json.JSONDecodeError:
+            log = []
     stamped = {**entry, "ts": datetime.now(timezone.utc).isoformat()}
     log.append(stamped)
     path.write_text(json.dumps(log, indent=2))

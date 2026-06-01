@@ -1,6 +1,8 @@
 import pytest
+from pydantic import ValidationError
 
 from forecasting.run_state import HaltedRunError, Phase, create_run_state, load_run_state
+from forecasting.run_state import run_dir
 from forecasting.tools.conductor_tools import (
     ConditionViolationError,
     get_run_state,
@@ -45,3 +47,51 @@ def test_log_halt_sets_phase(run_id, tmp_outputs):
     assert state.phase == Phase.HALTED
     assert state.halt_reason == "budget exceeded"
     assert any(event == "error" for event, _ in emitted)
+
+
+def test_update_rejects_invalid_phase_and_keeps_state(run_id, tmp_outputs):
+    create_run_state(run_id, domain="fmcg")
+    before = load_run_state(run_id)
+    with pytest.raises(ValidationError):
+        update_run_state(run_id, {"phase": "not_a_real_phase"})
+    after = load_run_state(run_id)
+    assert after.phase == before.phase
+
+
+def test_update_rejects_invalid_field_type_and_keeps_state(run_id, tmp_outputs):
+    create_run_state(run_id, domain="fmcg")
+    before = load_run_state(run_id)
+    with pytest.raises(ValidationError):
+        update_run_state(run_id, {"meridian_turn_count": "bad"})
+    after = load_run_state(run_id)
+    assert after.meridian_turn_count == before.meridian_turn_count
+
+
+def test_log_halt_recovers_from_malformed_obs_log(run_id, tmp_outputs):
+    create_run_state(run_id, domain="fmcg")
+    obs_path = run_dir(run_id) / "obs_log.json"
+    obs_path.write_text("{not json")
+    emitted = []
+
+    log_halt(run_id, "bad obs", lambda evt, payload: emitted.append((evt, payload)))
+
+    reloaded = load_run_state(run_id)
+    assert reloaded.phase == Phase.HALTED
+    assert any(event == "error" for event, _ in emitted)
+    log_data = __import__("json").loads(obs_path.read_text())
+    assert isinstance(log_data, list)
+    assert log_data[-1]["event"] == "HALT"
+
+
+def test_log_halt_recovers_from_non_list_obs_log(run_id, tmp_outputs):
+    create_run_state(run_id, domain="fmcg")
+    obs_path = run_dir(run_id) / "obs_log.json"
+    obs_path.write_text(__import__("json").dumps({"bad": "shape"}))
+    emitted = []
+
+    log_halt(run_id, "bad obs type", lambda evt, payload: emitted.append((evt, payload)))
+
+    assert any(event == "error" for event, _ in emitted)
+    log_data = __import__("json").loads(obs_path.read_text())
+    assert isinstance(log_data, list)
+    assert log_data[-1]["reason"] == "bad obs type"
