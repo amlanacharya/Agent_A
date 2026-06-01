@@ -175,6 +175,8 @@ IntentType = Literal[
 
 
 class IntentEntities(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     skus: list[str] = Field(default_factory=list)
     segments: list[str] = Field(default_factory=list)
     dates: list[str] = Field(default_factory=list)  # ISO strings
@@ -183,9 +185,11 @@ class IntentEntities(BaseModel):
 
 
 class IntentPack(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     intent: IntentType
     entities: IntentEntities = Field(default_factory=IntentEntities)
-    confidence: float  # 0.0-1.0
+    confidence: float = Field(ge=0.0, le=1.0)  # 0.0-1.0
     raw_quote: str  # verbatim fragment of user message that drove classification
 
 
