@@ -2,6 +2,19 @@
 
 A multi-agent demand forecasting assistant for FMCG (and other domains). A user uploads time-series sales data, converses with the system to scope and validate the forecast, and receives a structured forecast report with optional what-if scenario analysis.
 
+## Development Workflow
+
+All Python commands in this repository run through the project venv managed by `uv`.
+Use `.venv` as the local virtual environment and invoke tests with the venv active, for example:
+
+```powershell
+$env:VIRTUAL_ENV=(Resolve-Path .venv).Path
+$env:PATH="$env:VIRTUAL_ENV\Scripts;$env:PATH"
+uv run python -m pytest -q
+```
+
+This repository convention stays in force unless the user explicitly overrides it.
+
 ## Language
 
 ### Data & Series
