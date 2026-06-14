@@ -154,6 +154,11 @@ class FeatureFlags(BaseModel):
     use_lag_features: bool = True
     use_promo_indicator: bool = False
     fourier_terms: int = 3
+    # Explicit seasonal period for Fourier terms. When set, Fourier cycles
+    # over this period (e.g. 52 for weekly data with annual seasonality)
+    # rather than over the row-count of each series. Required for
+    # walk-forward validation so Fourier phases stay aligned across folds.
+    frequency_period: int | None = None
 
 
 # DomainContextPack is defined after Claim / Risk below - it embeds them.

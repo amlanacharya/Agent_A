@@ -65,17 +65,19 @@ Completed in the first implementation pass:
 - [x] Add backend cockpit state object for Mission Control style status.
 - [x] Add deterministic canonical Feature Factory for lag, rolling, promo, and Fourier features.
 - [x] Add schema mapper and canonical table contract for demand forecasting columns.
+- [x] Add fold-aware feature generation in the Feature Factory so walk-forward validation cannot derive training features from future rows (architecture review follow-up, 2026-06-14).
+- [x] Add explicit `frequency_period` to `FeatureFlags` so Fourier cycles over the real seasonal period (e.g. 52) instead of the per-series row count.
 - [x] Add tests for all implemented slices.
 
 Partially complete:
-- [ ] Full Feature Factory coverage is partial: lag, rolling, promo, and Fourier features exist; hierarchy, lifecycle, intermittency, stockout/availability, and fold-aware generation remain.
+- [ ] Full Feature Factory coverage is partial: lag, rolling, promo, Fourier, fold-aware, and frequency_period exist; hierarchy, lifecycle, intermittency, and stockout/availability families remain.
 - [ ] Data Intelligence Cockpit is partial: backend state DTO exists; UI surfaces and API wiring remain.
 - [ ] Learning harness is partial: markdown source-of-truth exists; graph/memory indexing remains.
 - [ ] Canonical data path is partial: explicit mapping and table validation exist; automated inference, persistence, EDA integration, and adapter escalation remain.
 
 Not started:
-- [ ] Full EDA toolbox.
-- [ ] Custom adapter workflow.
+- [ ] Full EDA toolbox (post-canonical orchestration of preflight stats into the EDAReport / SeriesDemandProfile contract).
+- [ ] Custom adapter workflow (real EscalationTracker-driven code/adapter flow with markdown cards).
 - [ ] Forecasting model harness.
 - [ ] Champion/challenger model registry.
 - [ ] Replenishment policy engine.
@@ -148,8 +150,8 @@ Not started:
   - hierarchy
   - lifecycle and cold-start
   - intermittency
-- [ ] Enforce time-aware feature generation and no-leakage checks.
-- [ ] Before Foundry model promotion, add a fold-aware feature generation path or explicit seasonal period parameter so walk-forward validation does not derive training features from validation/future rows.
+- [x] Enforce time-aware feature generation and no-leakage checks.
+- [x] Before Foundry model promotion, add a fold-aware feature generation path or explicit seasonal period parameter so walk-forward validation does not derive training features from validation/future rows. Implemented as `build_feature_table(..., fold_cutoffs=...)` plus `FeatureFlags.frequency_period`.
 - [ ] Allow agentic feature code only when the Feature Factory cannot express the needed transformation, capped at three tries.
 
 ### Phase 4: Forecasting Harness
