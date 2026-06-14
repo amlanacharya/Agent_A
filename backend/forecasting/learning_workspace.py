@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -54,7 +54,7 @@ class RunWorkspace:
 
 
 def validate_memory_layer(layer: str) -> MemoryLayer:
-    if layer not in {"global", "customer", "project"}:
+    if layer not in set(get_args(MemoryLayer)):
         raise MemoryLayerError(f"Unknown memory layer: {layer}")
     return layer  # type: ignore[return-value]
 
