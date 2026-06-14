@@ -11,6 +11,9 @@ by ``forecasting.canonical_data.build_canonical_table``) and a provisional
   seasonality, recommended models);
 * a per-series ``FeatureFlags`` recommendation driving the Feature Factory;
 * a short deterministic narrative summarising the segments and class mix;
+* the Phase 2 EDA probes (type detection, missingness, duplicates, date
+  gaps, join validation, leakage) — composed from
+  ``forecasting.eda_probes``;
 * an optional ``EscalationTracker`` hook for degenerate series the standard
   toolbox cannot characterise.
 
@@ -28,6 +31,14 @@ from forecasting.contracts import (
     SBClass,
     SegmentMap,
     SeriesDemandProfile,
+)
+from forecasting.eda_probes import (
+    detect_column_types,
+    detect_date_gaps_per_series,
+    detect_duplicate_keys,
+    detect_leakage_per_series,
+    measure_missingness,
+    validate_joins,
 )
 from forecasting.tools.preflight_stats import (
     aggregate_segment_profiles,
@@ -76,6 +87,18 @@ def build_eda_report(
         for key in series_keys
     }
     segment_profiles = aggregate_segment_profiles(series_map, adi_cv2, segment_map)
+
+    # Phase 2 probes. These run on the full canonical table (so they can
+    # see columns other than the demand series we grouped on) and the
+    # per-series map (so date-gap and leakage checks have one frame per
+    # series to work with).
+    type_detection = detect_column_types(canonical_table)
+    missingness = measure_missingness(canonical_table)
+    duplicates = detect_duplicate_keys(canonical_table)
+    date_gaps = detect_date_gaps_per_series(series_map, expected_period_days=frequency_period)
+    join_validation = validate_joins(canonical_table)
+    leakage = detect_leakage_per_series(series_map)
+
     narrative = _build_narrative(segment_profiles, series_profiles)
     if escalation is not None:
         _maybe_escalate_degenerate(series_map, escalation)
@@ -85,6 +108,12 @@ def build_eda_report(
         series_profiles=series_profiles,
         feature_config=feature_config,
         narrative=narrative,
+        type_detection=type_detection,
+        missingness=missingness,
+        duplicates=duplicates,
+        date_gaps=date_gaps,
+        join_validation=join_validation,
+        leakage=leakage,
     )
 
 

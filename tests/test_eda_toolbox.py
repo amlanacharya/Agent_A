@@ -307,3 +307,27 @@ def test_build_eda_report_emits_one_series_profile_per_series():
     assert keys == {"SKU_A|NORTH", "SKU_B|NORTH"}
     for profile in report.series_profiles:
         assert isinstance(profile, SeriesDemandProfile)
+
+
+def test_build_eda_report_populates_phase2_probes():
+    """Phase 2 completeness check from the toolbox side: every EDA
+    sub-check probe must be present (non-None) on the report so that
+    the cockpit and downstream layers can rely on the schema."""
+    rows = []
+    base = pd.Timestamp("2024-01-01")
+    for week in range(8):
+        rows.append({"series_key": "SKU_A|N", "date": base + pd.Timedelta(weeks=week), "demand": 10.0, "promo": False})
+        rows.append({"series_key": "SKU_B|N", "date": base + pd.Timedelta(weeks=week), "demand": 5.0, "promo": False})
+    seg_map = _single_segment_map(["SKU_A|N", "SKU_B|N"], run_id="r-phase2")
+
+    report = build_eda_report(_canonical_table(rows), seg_map, frequency_period=52)
+
+    assert report.type_detection is not None
+    assert report.missingness is not None
+    assert report.duplicates is not None
+    assert report.date_gaps is not None
+    assert report.join_validation is not None
+    assert report.leakage is not None
+    # On a clean table, the probes should not flag any issues.
+    assert report.duplicates.duplicate_rows == 0
+    assert report.date_gaps.series_with_gaps == []

@@ -159,6 +159,24 @@ class FeatureFlags(BaseModel):
     # rather than over the row-count of each series. Required for
     # walk-forward validation so Fourier phases stay aligned across folds.
     frequency_period: int | None = None
+    # Phase 3 feature families. All default to False so existing callers
+    # keep producing the same canonical feature table.
+    #
+    # Stockout / availability: rolling stockout counts, days-since-last
+    # stockout, inventory cover ratio derived from stockout_flag and
+    # inventory_qty. Requires ``stockout`` and ``inventory`` columns on
+    # the canonical input.
+    use_stockout_features: bool = False
+    # Hierarchy: parent-level (sku_id aggregated across location_id)
+    # lag-1 and rolling-4 demand, fold-aware. Requires ``sku_id`` to be
+    # present on the canonical input.
+    use_hierarchy_features: bool = False
+    # Lifecycle / cold-start: history length, time-since-first-observation
+    # in days, and a cold-start flag. Pure row-local features (no leakage).
+    use_lifecycle_features: bool = False
+    # Intermittency: rolling-window ADI, CV², and trailing zero-run length.
+    # All time-dependent and fold-aware.
+    use_intermittency_features: bool = False
 
 
 # DomainContextPack is defined after Claim / Risk below - it embeds them.
@@ -291,12 +309,139 @@ class SeriesDemandProfile(BaseModel):
     recommended_models: list[str]
 
 
+# ---------------------------------------------------------------------------
+# EDA sub-check contracts (Phase 2 — data quality probes)
+#
+# Each probe operates on the canonical demand table and produces a small
+# Pydantic payload. The Forge EDA layer composes them into the EDAReport.
+# Probes are *advisory* (they never block the run on their own) but they
+# escalate through the ``EscalationTracker`` when standard expectations
+# fail.
+# ---------------------------------------------------------------------------
+
+InferredColumnType = Literal[
+    "integer",
+    "float",
+    "boolean",
+    "string",
+    "datetime",
+    "empty",
+    "mixed",
+]
+
+
+class ColumnTypeInference(BaseModel):
+    column: str
+    inferred_type: InferredColumnType
+    nullable: bool
+    unique_count: int
+    sample_values: list[str] = Field(default_factory=list)
+
+
+class TypeDetectionReport(BaseModel):
+    columns: list[ColumnTypeInference]
+    # The number of columns whose inferred type did NOT match the type the
+    # canonical contract expects (e.g. a "demand_qty" column containing
+    # strings). High counts surface as a warning in the EDA narrative.
+    contract_mismatches: list[str] = Field(default_factory=list)
+
+
+class MissingnessStats(BaseModel):
+    column: str
+    missing_count: int
+    missing_fraction: float
+
+
+class MissingnessReport(BaseModel):
+    per_column: list[MissingnessStats]
+    # Number of rows that have at least one missing value in the optional /
+    # not-required-by-contract columns. "Required" columns (sku_id,
+    # location_id, week_start, demand_qty) are not allowed to have missing
+    # values — see canonical_data validation.
+    rows_with_missing: int
+    rows_total: int
+
+
+class DuplicateReport(BaseModel):
+    # (series_key, date) collisions in the canonical table. A canonical
+    # table MUST have a unique key per series per date; duplicates indicate
+    # an upstream aggregation mistake that the canonical layer did not
+    # de-duplicate.
+    duplicate_rows: int
+    duplicate_keys: list[str] = Field(default_factory=list)
+    duplicate_fraction: float
+
+
+class SeriesDateGapStats(BaseModel):
+    series_key: str
+    expected_period_days: int | None = None
+    actual_gap_count: int
+    max_gap_days: int
+    median_gap_days: float
+    out_of_order_rows: int
+
+
+class DateGapsReport(BaseModel):
+    per_series: dict[str, SeriesDateGapStats]
+    # Series that have at least one gap strictly larger than 1.5x the
+    # expected period.
+    series_with_gaps: list[str] = Field(default_factory=list)
+
+
+class JoinValidationIssue(BaseModel):
+    kind: Literal[
+        "MISSING_INVENTORY_FOR_DEMAND",
+        "MISSING_PRICE_FOR_DEMAND",
+        "MISSING_LEAD_TIME_FOR_DEMAND",
+        "INVENTORY_WITHOUT_DEMAND",
+    ]
+    series_key: str
+    detail: str
+
+
+class JoinValidationReport(BaseModel):
+    issues: list[JoinValidationIssue]
+    # Demand rows that have a NaN inventory value (when inventory_qty is
+    # expected to be populated). Keep an issue per series for traceability.
+    inventory_coverage: float
+    price_coverage: float
+    lead_time_coverage: float
+
+
+class SeriesLeakageStats(BaseModel):
+    series_key: str
+    # Correlation between demand[t] and demand[t+1] is expected (lag-1
+    # autocorrelation is a feature). A near-1 correlation between demand[t]
+    # and demand[t+2..t+5] in a weekly series is a leakage red flag — it
+    # usually means a future column leaked into the past.
+    forward_correlation_max: float
+    # demand_qty equal to inventory_qty is impossible: inventory is the
+    # stock on hand, not what was sold. Detecting it tells the user their
+    # upstream join is wrong.
+    demand_equals_inventory_rows: int
+
+
+class LeakageReport(BaseModel):
+    per_series: dict[str, SeriesLeakageStats]
+    # Series with at least one suspicion — short-cut for the EDA narrative.
+    suspect_series: list[str] = Field(default_factory=list)
+
+
 class EDAReport(BaseModel):
     run_id: str
     segment_profiles: list[SegmentProfile]
     series_profiles: list[SeriesDemandProfile]
     feature_config: dict[str, FeatureFlags]
     narrative: str
+    # Phase 2 probes. All default to empty/None so that callers (and
+    # existing tests) constructed before the probes existed continue to
+    # pass without modification.
+    type_detection: TypeDetectionReport | None = None
+    missingness: MissingnessReport | None = None
+    duplicates: DuplicateReport | None = None
+    date_gaps: DateGapsReport | None = None
+    join_validation: JoinValidationReport | None = None
+    leakage: LeakageReport | None = None
 
 
 # ---------------------------------------------------------------------------

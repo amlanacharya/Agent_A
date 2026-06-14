@@ -49,3 +49,49 @@ backend/outputs/
 # Type checking
 .mypy_cache/
 .dmypy.json
+
+# ML model artifacts
+*.pkl
+*.pickle
+*.joblib
+*.model
+*.bin
+*.onnx
+*.pt
+*.pth
+models/saved/
+mlruns/
+mlartifacts/
+
+# Data files (raw, staging, canonical)
+data/raw/
+data/staging/
+data/canonical/
+data/exports/
+*.csv
+*.parquet
+*.xlsx
+*.xls
+*.feather
+*.arrow
+*.hdf5
+*.h5
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Forecast and replenishment outputs
+backend/forecasts/
+backend/recommendations/
+backend/reports/
+
+# Monitoring and drift reports (generated artifacts — source of truth is markdown in workspace)
+MONITORING_REPORT.md
+DRIFT_REPORT.md
+OVERRIDE_ANALYSIS.md
+MODEL_HEALTH.md
+
+# UiPath
+*.nupkg
+.local/

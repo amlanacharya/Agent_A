@@ -75,18 +75,18 @@ Reason: this product will fail if the harness is not trustworthy. The cockpit ma
 
 ### Phase 2: Data Intake, EDA, And Canonical Contract
 
-- [ ] Build the standard EDA toolbox:
+- [x] Build the standard EDA toolbox:
   - [x] schema inference — `preflight_schema.py`
-  - [ ] type detection — not explicitly implemented
-  - [ ] missingness — not explicitly implemented
-  - [ ] duplicates — not implemented
-  - [ ] date gaps — not implemented
+  - [x] type detection — `eda_probes.detect_column_types` (per-column dtype inference with contract mismatch surfacing)
+  - [x] missingness — `eda_probes.measure_missingness` (per-column + per-row counts; required columns excluded from the rows-with-missing metric)
+  - [x] duplicates — `eda_probes.detect_duplicate_keys` (`(series_key, date)` collisions)
+  - [x] date gaps — `eda_probes.detect_date_gaps_per_series` (per-series expected/actual gap, out-of-order rows)
   - [x] grain detection — `preflight.py` frequency/grain detection
   - [x] SKU/location cardinality — `preflight.py` series cardinality
   - [x] demand sparsity — `eda_toolbox.py` ADI/CV² per series
   - [x] stockout distortion — `preflight.py` zero runs detection
-  - [ ] join validation — not implemented
-  - [ ] leakage checks — not implemented
+  - [x] join validation — `eda_probes.validate_joins` (per-dimension coverage + per-series missing issues)
+  - [x] leakage checks — `eda_probes.detect_leakage_per_series` (forward correlation at lags 2..5 + demand==inventory probe)
 - [x] Build schema mapping into the canonical demand forecasting schema:
   - `sku_id`
   - `location_id`
@@ -106,24 +106,24 @@ Reason: this product will fail if the harness is not trustworthy. The cockpit ma
   - successful adapter gets tests and markdown card
   - failed adapter produces exact failure report
 
-> ⚠️ **Phase 2 partial.** Canonical schema mapping (`canonical_data.py`) and adapter escalation (`code_escalation.py`, 6 layers including `eda`, `schema_mapping`, `canonical_table`) are complete. EDA toolbox has 5 of 11 sub-checks; missing: type detection, missingness, duplicates, date gaps, join validation, leakage checks.
+> ✅ **Phase 2 complete.** EDA toolbox (`eda_probes.py`, 6 new sub-checks) wired into `build_eda_report`; canonical schema mapping (`canonical_data.py`) and adapter escalation (`code_escalation.py`, 6 layers) unchanged. All 11 EDA sub-checks now implemented. New contracts: `TypeDetectionReport`, `MissingnessReport`, `DuplicateReport`, `DateGapsReport`, `JoinValidationReport`, `LeakageReport` — added to `EDAReport` with `None` defaults so existing callers keep working. Tests: `tests/test_eda_probes.py` (27 new) + one regression-guard in `tests/test_eda_toolbox.py`; full suite 200 passing.
 
 ### Phase 3: Feature Factory
 
 - [x] Build a versioned Feature Factory shared by all models.
-- [ ] Include feature families:
+- [x] Include feature families:
   - [x] lag demand — `lag_1`, `lag_2` in `feature_factory.py`
   - [x] rolling statistics — `rolling_mean_4` in `feature_factory.py`
   - [x] seasonality and calendar — Fourier sin/cos terms in `feature_factory.py`
   - [x] price and promotion — promo indicator in `feature_factory.py`
-  - [ ] stockout and availability — not implemented
-  - [ ] hierarchy — not implemented
-  - [ ] lifecycle and cold-start — not implemented
-  - [ ] intermittency — not implemented
+  - [x] stockout and availability — `stockout_rolling_count_4`, `days_since_stockout`, `inventory_cover_ratio` (gated by `use_stockout_features`, requires `stockout_flag` + `inventory_qty`)
+  - [x] hierarchy — `parent_lag_1`, `parent_rolling_mean_4` (parent = `sku_id` aggregated across `location_id`; gated by `use_hierarchy_features`)
+  - [x] lifecycle and cold-start — `history_length`, `days_since_first_obs`, `cold_start_flag` (gated by `use_lifecycle_features`)
+  - [x] intermittency — `rolling_adi_8`, `rolling_cv2_8`, `trailing_zero_run` (gated by `use_intermittency_features`)
 - [x] Enforce time-aware feature generation and no-leakage checks.
 - [x] Allow agentic feature code only when the Feature Factory cannot express the needed transformation, capped at three tries.
 
-> ⚠️ **Phase 3 partial.** Feature Factory exists with fold-aware generation enforced. 4 of 8 feature families implemented; missing: stockout/availability, hierarchy, lifecycle/cold-start, intermittency.
+> ✅ **Phase 3 complete.** All 8 feature families implemented in `feature_factory.py`; the time-aware band logic is factored into `_iter_fold_bands()` and reused by every time-dependent family. New `FeatureFlag` fields default to `False` so existing callers (and the 200 pre-existing tests) keep producing identical output. Each new family is fold-aware: rows strictly after the last cutoff get NaN, so walk-forward validation cannot peek. Hierarchy aggregates to `(parent, date)` first so all children of the same parent see the same parent value. Tests: 16 new in `test_feature_factory.py` (one for each new family, one smoke test for all 4 families composing, plus the fold-cutoff NaN guard); full suite 216 passing.
 
 ### Phase 4: Forecasting Harness
 
@@ -284,8 +284,8 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 | Phase | Status | Notes |
 |---|---|---|
 | 1: Workspace & Knowledge Substrate | ✅ Complete | `learning_workspace.py` + tests |
-| 2: Data Intake, EDA, Canonical Contract | ⚠️ Partial | Canonical schema + escalation done; 6 EDA sub-checks missing |
-| 3: Feature Factory | ⚠️ Partial | 4 of 8 feature families; fold-aware generation done |
+| 2: Data Intake, EDA, Canonical Contract | ✅ Complete | `eda_probes.py` (6 new sub-checks) wired into `build_eda_report`; canonical schema + escalation unchanged. 200 tests pass. |
+| 3: Feature Factory | ✅ Complete | All 8 families implemented in `feature_factory.py` (4 new: stockout/availability, hierarchy, lifecycle/cold-start, intermittency). Fold-aware band logic factored into `_iter_fold_bands()`. 16 new tests; 216 total pass. |
 | 4: Forecasting Harness | ❌ Not started | |
 | 5: Evaluation, Promotion, Replenishment | ❌ Not started | |
 | 6: UiPath Orchestration | ❌ Not started | |
