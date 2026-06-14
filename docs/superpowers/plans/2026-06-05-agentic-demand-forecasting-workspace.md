@@ -74,9 +74,10 @@ Partially complete:
 - [ ] Data Intelligence Cockpit is partial: backend state DTO exists; UI surfaces and API wiring remain.
 - [ ] Learning harness is partial: markdown source-of-truth exists; graph/memory indexing remains.
 - [ ] Canonical data path is partial: explicit mapping and table validation exist; automated inference, persistence, EDA integration, and adapter escalation remain.
+- [ ] EDA toolbox is partial: the post-canonical orchestration (lines 121+) into the EDAReport / SeriesDemandProfile contract is in place (see eda_toolbox.py). The pre-canonical data-quality sub-bullets above (schema inference, type detection, missingness, duplicates, date gaps, grain detection, SKU/location cardinality, demand sparsity, stockout distortion, join validation, leakage checks) are still missing.
 
 Not started:
-- [x] Full EDA toolbox (post-canonical orchestration of preflight stats into the EDAReport / SeriesDemandProfile contract).
+- [x] Full EDA toolbox (post-canonical orchestration of preflight stats into the EDAReport / SeriesDemandProfile contract) — landed 2026-06-14.
 - [ ] Custom adapter workflow (real EscalationTracker-driven code/adapter flow with markdown cards).
 - [ ] Forecasting model harness.
 - [ ] Champion/challenger model registry.
