@@ -2596,3 +2596,24 @@ export const api = {
 ```
 
 ---
+---
+
+## Agentic Interaction Layer (Project B)
+
+Layered onto the contracts above; TDD tasks live in `docs/plans/plan.md` Phase G (Tasks 32–42) and the rationale in ADR-0005.
+
+**New contracts** (`contracts.py`): `NeedKind = Literal["USER_DECISION","SCOPE_AMENDMENT"]`; `AgentNeed {agent, kind, question, options[], context}`; `AwaitingInput {need, raised_at}`; `PauseForInput(Exception)` carrying an `AgentNeed` (resumable — NOT a `GuardHalt`).
+
+**RunState additions**: `pack_version`, `awaiting_input: AwaitingInput | None`, `loopback_count`, `tokens_used_total`, `foundry_calls_total`.
+
+**Tools**: agent-side `raise_need(agent, kind, question, options, context)`; Conductor `resolve_need(run_id, answer)` and `reroute(run_id, target_phase, reason)`; `rerun_affected_series(run_id, namespace, series_keys, run_forge, run_foundry)` (loop-back reuses Prism's engine with `namespace=run_id`).
+
+**SSE**: `agent_reasoning {agent, text}`, `agent_needs_input {agent, kind, question, options, context}`.
+
+**Invariants**:
+- Pause is non-terminal and resets nothing; only `GuardHalt` ends a run.
+- Resume = idempotent re-invocation: agents skip steps whose artifacts already exist and apply the answer at the decision point.
+- Exactly one outstanding need at a time; agents batch homogeneous decisions.
+- Cumulative budgets persist in RunState and are seeded/written-back per invocation (or resume defeats the Guard).
+- Loop-back is a scoped pack amendment that re-locks (`pack_version++`) and re-runs only the affected slice; bounded by `loopback_count` (default 3, `.env`); pre-report mutates in place, post-report uses a cloned Prism what-if.
+- Two checkpoints only: Forge strong-unconfirmed-break (`SCOPE_AMENDMENT`) and Foundry target-shortfall batch (`USER_DECISION`); everything else takes a documented default + logs a Claim + narrates.

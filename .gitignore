@@ -43,6 +43,9 @@ logs/
 htmlcov/
 .tox/
 
+# Runtime artifacts
+backend/outputs/
+
 # Type checking
 .mypy_cache/
 .dmypy.json
