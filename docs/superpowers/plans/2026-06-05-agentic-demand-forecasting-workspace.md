@@ -76,7 +76,7 @@ Partially complete:
 - [ ] Canonical data path is partial: explicit mapping and table validation exist; automated inference, persistence, EDA integration, and adapter escalation remain.
 
 Not started:
-- [ ] Full EDA toolbox (post-canonical orchestration of preflight stats into the EDAReport / SeriesDemandProfile contract).
+- [x] Full EDA toolbox (post-canonical orchestration of preflight stats into the EDAReport / SeriesDemandProfile contract).
 - [ ] Custom adapter workflow (real EscalationTracker-driven code/adapter flow with markdown cards).
 - [ ] Forecasting model harness.
 - [ ] Champion/challenger model registry.
