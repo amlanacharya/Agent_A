@@ -142,18 +142,17 @@ def run_forecast_harness(
                 families_with_scorecards.add(family)
                 scorecards.append(scorecard)
                 per_family_metrics[family] = scorecard  # last fold wins; the harness keeps the most recent
-                # ``predict`` for the inference point is just a
-                # one-shot forecast on the full history; the fold
-                # loop above has already done the backtest.
-                inference_state = _safe_fit(model, history=series_history, features=series_features)
-                if inference_state is not None:
-                    forecast = _safe_predict(model, inference_state, horizon=request.horizon)
-                    if forecast is not None:
-                        per_family_forecasts[family] = forecast
 
             if family not in per_family_metrics:
                 # Family failed every fold for this series.
                 failed_families[series_key].add(family)
+                continue
+            # Inference fit runs once on the full history, after all folds.
+            inference_state = _safe_fit(model, history=series_history, features=series_features)
+            if inference_state is not None:
+                forecast = _safe_predict(model, inference_state, horizon=request.horizon)
+                if forecast is not None:
+                    per_family_forecasts[family] = forecast
 
         if not per_family_metrics:
             # Every candidate family failed for this series.
@@ -188,7 +187,7 @@ def run_forecast_harness(
     # Derive the ensemble summary from the scorecards the harness
     # actually produced. ``series_segment`` reuses the segment /
     # demand-class mapping so per-segment weights are correct.
-    series_segment = {key: value for key, value in request.segment_sb_class.items()}
+    series_segment = dict(request.segment_sb_class)
     tracker = summarise_scorecards(scorecards, series_segment=series_segment)
     ensemble_summary = tracker.summary() if scorecards else None
 
@@ -255,14 +254,7 @@ def _validate_request(request: ForecastRequest, features: pd.DataFrame) -> None:
 
 
 def _series_keys_in_order(features: pd.DataFrame) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for value in features["series_key"].tolist():
-        if value in seen:
-            continue
-        seen.add(value)
-        ordered.append(value)
-    return ordered
+    return list(dict.fromkeys(features["series_key"]))
 
 
 def _series_history(features: pd.DataFrame, series_key: str, target_col: str) -> pd.Series:
@@ -487,7 +479,6 @@ __all__ = [
     "ModelScorecard",
     "SeriesResult",
     "ModelResult",
-    "pd",
 ]
 
 
@@ -500,7 +491,8 @@ def _default_mase_target() -> float:
     return 1.0
 
 
-if not hasattr(ForecastRequest, "mase_target_for"):
-    def _mase_target_for(self, series_key: str) -> float:
-        return _default_mase_target()
-    ForecastRequest.mase_target_for = _mase_target_for  # type: ignore[attr-defined]
+def _mase_target_for(self, series_key: str) -> float:
+    return _default_mase_target()
+
+
+ForecastRequest.mase_target_for = _mase_target_for  # type: ignore[attr-defined]

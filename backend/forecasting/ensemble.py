@@ -159,9 +159,6 @@ class EnsembleTracker:
             share = 1.0 / len(active)
             return {family: share for family in sorted(active)}
         total = sum(wins.values())
-        if total == 0:
-            share = 1.0 / len(active)
-            return {family: share for family in sorted(active)}
         raw_weights: dict[ModelFamilyName, float] = {
             family: wins.get(family, 0) / total for family in active
         }
@@ -172,7 +169,7 @@ class EnsembleTracker:
         # protected family is at the floor, in case multiple
         # protected families are competing for the 5% slots.
         floor = 0.05
-        for _ in range(len(active) + 1):
+        for _ in range(len(PROTECTED_FAMILIES) + 1):
             deficit = 0.0
             for family in PROTECTED_FAMILIES & active:
                 if raw_weights[family] < floor:
@@ -295,24 +292,15 @@ def summarise_scorecards(
     scorecard_list = list(scorecards)
     run_id = "unknown"
 
-    # Round 1: build the tracker so families_per_segment and
-    # series_count are populated.
-    tracker = EnsembleTracker(run_id=run_id, series_segment=series_segment)
-    for scorecard in scorecard_list:
-        tracker.record(scorecard)
-
-    # Round 2: compute the best MAE per series and record a win
-    # for the family that achieved it. Retired families are
-    # ignored so a retirement retroactively takes them out of
-    # the "frequently promoted" tally.
     retired_set = set(retired)
+    tracker = EnsembleTracker(run_id=run_id, series_segment=series_segment)
     best_per_series: dict[str, ModelScorecard] = {}
     for scorecard in scorecard_list:
-        if scorecard.model_family in retired_set:
-            continue
-        existing = best_per_series.get(scorecard.series_key)
-        if existing is None or scorecard.mae < existing.mae:
-            best_per_series[scorecard.series_key] = scorecard
+        tracker.record(scorecard)
+        if scorecard.model_family not in retired_set:
+            existing = best_per_series.get(scorecard.series_key)
+            if existing is None or scorecard.mae < existing.mae:
+                best_per_series[scorecard.series_key] = scorecard
     for scorecard in best_per_series.values():
         tracker.record_winner(scorecard.series_key, scorecard.model_family)
     for family in retired_set:
@@ -325,5 +313,4 @@ __all__ = [
     "blend_forecasts",
     "summarise_scorecards",
     "PROTECTED_FAMILIES",
-    "_PROMOTION_THRESHOLD",
 ]

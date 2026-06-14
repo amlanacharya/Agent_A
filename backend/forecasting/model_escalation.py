@@ -41,6 +41,7 @@ distinguish "registered model" from "experimental model".
 from __future__ import annotations
 
 import math
+import statistics
 from typing import Iterable, Literal
 
 from forecasting.code_escalation import (
@@ -279,11 +280,7 @@ def declare_custom_family_failure(
 def _median(values: list[float]) -> float:
     if not values:
         return float("nan")
-    sorted_values = sorted(values)
-    midpoint = len(sorted_values) // 2
-    if len(sorted_values) % 2:
-        return float(sorted_values[midpoint])
-    return (sorted_values[midpoint - 1] + sorted_values[midpoint]) / 2.0
+    return float(statistics.median(values))
 
 
 def gate_was_failed(checks: list[RobustnessCheck], gate: Gate) -> bool:

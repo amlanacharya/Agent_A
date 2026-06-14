@@ -449,6 +449,9 @@ class XGBoostGlobalModel(ForecastingModel):
         model = _decode_xgboost_model(xgboost, payload["model"])
         current = list(payload["last_x"])
         feature_cols = list(payload["feature_cols"])
+        idx_lag_1 = feature_cols.index("lag_1") if "lag_1" in feature_cols else None
+        idx_lag_2 = feature_cols.index("lag_2") if "lag_2" in feature_cols else None
+        idx_roll = feature_cols.index("rolling_mean_4") if "rolling_mean_4" in feature_cols else None
         forecasts: list[float] = []
         for _ in range(horizon):
             prediction = float(model.predict(np.array([current], dtype=float))[0])
@@ -460,15 +463,12 @@ class XGBoostGlobalModel(ForecastingModel):
             # re-derives the others as a simple average. This is
             # deliberately naive — Phase 5 will refine with proper
             # backtest gates.
-            if "lag_1" in feature_cols:
-                idx_lag_1 = feature_cols.index("lag_1")
+            if idx_lag_1 is not None:
                 current[idx_lag_1] = forecasts[-1]
-            if "lag_2" in feature_cols:
-                idx_lag_2 = feature_cols.index("lag_2")
+            if idx_lag_2 is not None:
                 current[idx_lag_2] = forecasts[-2] if len(forecasts) >= 2 else forecasts[-1]
-            if "rolling_mean_4" in feature_cols:
-                idx_roll = feature_cols.index("rolling_mean_4")
-                recent = forecasts[-min(4, len(forecasts)) :]
+            if idx_roll is not None:
+                recent = forecasts[-min(4, len(forecasts)):]
                 current[idx_roll] = float(np.mean(recent)) if recent else 0.0
         return forecasts
 
@@ -490,8 +490,7 @@ def _encode_xgboost_model(model: Any) -> str:
 def _decode_xgboost_model(xgboost: Any, raw: str):
     booster = xgboost.Booster()
     booster.load_model(bytearray(raw.encode("latin-1")))
-    from xgboost import XGBRegressor
-    wrapper = XGBRegressor()
+    wrapper = xgboost.XGBRegressor()
     wrapper._Booster = booster
     return wrapper
 
@@ -537,9 +536,10 @@ class AggregateAllocateModel(ForecastingModel):
         # the same date. When the parent has no value on that date
         # (sparse data) we fall back to a uniform 1 / n_children
         # share if there is sibling data in the features frame.
-        child_value = float(history.dropna().iloc[-1]) if not history.dropna().empty else 0.0
+        clean_history = history.dropna()
+        child_value = float(clean_history.iloc[-1]) if not clean_history.empty else 0.0
         # Use the most recent date in the child history.
-        child_date = history.dropna().index[-1] if not history.dropna().empty else None
+        child_date = clean_history.index[-1] if not clean_history.empty else None
         if child_date is not None and child_date in parent_demand.index:
             parent_value = float(parent_demand.loc[child_date])
         else:
@@ -648,7 +648,4 @@ __all__ = [
     "list_model_families",
     "build_model",
     "default_families_for_class",
-    "default_families_for_class",
-    "Sequence",
-    "pd",
 ]
