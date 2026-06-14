@@ -127,25 +127,25 @@ Reason: this product will fail if the harness is not trustworthy. The cockpit ma
 
 ### Phase 4: Forecasting Harness
 
-- [ ] Implement governed model families:
-  - naive baseline
-  - seasonal naive
-  - moving average / exponential smoothing
-  - intermittent demand models
-  - XGBoost/global ML model over canonical features
-  - aggregate-and-allocate fallback
-- [ ] Add model creation escalation:
-  - only after existing model families fail
-  - human permission required
-  - maximum three agentic attempts
-  - output must pass data contract, backtest, robustness, and review gates
-- [ ] Track ensemble behavior:
-  - model weights by segment
-  - frequently promoted models
-  - models that never surface
-  - retired but retained model histories
+- [x] Implement governed model families:
+  - naive baseline — `forecasting_models.NaiveModel`
+  - seasonal naive — `forecasting_models.SeasonalNaiveModel`
+  - moving average / exponential smoothing — `forecasting_models.MovingAverageModel` + `ExponentialSmoothingModel` (Holt, additive trend, alpha/beta grid-searched)
+  - intermittent demand models — `forecasting_models.CrostonModel`
+  - XGBoost/global ML model over canonical features — `forecasting_models.XGBoostGlobalModel` (xgboost >= 3.2, sklearn dep added; recursive lag-1 forecast)
+  - aggregate-and-allocate fallback — `forecasting_models.AggregateAllocateModel` (top-down: parent-grain forecast, share-allocation to children)
+- [x] Add model creation escalation:
+  - only after existing model families fail — `EnsembleTracker` flags `never_surfaced` and `failed_families`; harness drops failed families per-series
+  - human permission required — `check_review` gate
+  - maximum three agentic attempts — `model_escalation.request_custom_family_attempt` wraps shared `EscalationTracker` with the existing 3-attempt cap
+  - output must pass data contract, backtest, robustness, and review gates — `model_escalation.check_data_contract` / `check_backtest` / `check_robustness` / `check_review`; failures produce a `ModelFailureReport` after the cap
+- [x] Track ensemble behavior:
+  - model weights by segment — `EnsembleTracker.weights_for_segment` (proportional to win rate, with a 5% floor for protected families naive/seasonal_naive/croston)
+  - frequently promoted models — `EnsembleTracker.frequently_promoted` (>= 50% best-in-fold rate)
+  - models that never surface — `EnsembleTracker.never_surfaced` (ran but never won) plus the harness's `ForecastHarnessReport.never_surfaced` (fit failed entirely)
+  - retired but retained model histories — `EnsembleTracker.retire` + `EnsembleSummary.retired`; scorecards stay in the audit history
 
-> ❌ **Phase 4 not started.**
+> ✅ **Phase 4 complete.** Governed model families in `forecasting_models.py`; ensemble tracking in `ensemble.py`; custom-family escalation in `model_escalation.py`; the harness in `forecast_harness.py` ties them together and returns a `ForecastHarnessReport` with scorecards, robustness checks, and the ensemble summary. New contracts in `contracts.py`: `ModelFamilyName`, `ModelScorecard`, `RobustnessCheck`, `ForecastRequest`, `ForecastHarnessReport`, `EnsembleSummary`, `ModelFailureReport`. Tests: 83 new across `test_forecasting_models.py` (24), `test_ensemble.py` (17), `test_model_escalation.py` (27), `test_forecast_harness.py` (15); full suite 299 passing. Dependencies added: `xgboost>=3.2.0`, `scikit-learn>=1.5.0`.
 
 ### Phase 5: Evaluation, Promotion, And Replenishment Policy
 
@@ -286,7 +286,7 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 | 1: Workspace & Knowledge Substrate | ✅ Complete | `learning_workspace.py` + tests |
 | 2: Data Intake, EDA, Canonical Contract | ✅ Complete | `eda_probes.py` (6 new sub-checks) wired into `build_eda_report`; canonical schema + escalation unchanged. 200 tests pass. |
 | 3: Feature Factory | ✅ Complete | All 8 families implemented in `feature_factory.py` (4 new: stockout/availability, hierarchy, lifecycle/cold-start, intermittency). Fold-aware band logic factored into `_iter_fold_bands()`. 16 new tests; 216 total pass. |
-| 4: Forecasting Harness | ❌ Not started | |
+| 4: Forecasting Harness | ✅ Complete | 6 governed model families + ensemble + custom-family escalation. `forecasting_models.py`, `ensemble.py`, `model_escalation.py`, `forecast_harness.py`. New contracts: `ModelFamilyName`, `ModelScorecard`, `RobustnessCheck`, `ForecastRequest`, `ForecastHarnessReport`, `EnsembleSummary`, `ModelFailureReport`. 83 new tests; 299 total pass. |
 | 5: Evaluation, Promotion, Replenishment | ❌ Not started | |
 | 6: UiPath Orchestration | ❌ Not started | |
 | 7: Monitoring & Augmented MLOps | ❌ Not started | |

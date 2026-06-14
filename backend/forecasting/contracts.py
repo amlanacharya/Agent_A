@@ -500,3 +500,169 @@ class ScenarioComparison(BaseModel):
     demand_class_changed: bool
     baseline_sb_class: SBClass
     scenario_sb_class: SBClass
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 - Forecasting Harness contracts
+#
+# A "model family" is one of the governed, registered model types a
+# harness can fit. The harness is what decides which families to run,
+# which to surface, and how to weight them. The families themselves
+# stay small and self-contained.
+# ---------------------------------------------------------------------------
+
+ModelFamilyName = Literal[
+    "naive",
+    "seasonal_naive",
+    "moving_average",
+    "exponential_smoothing",
+    "croston",
+    "xgboost_global",
+    "aggregate_allocate",
+]
+
+# A scorecard for one model fit on one series' backtest fold. The
+# forecast itself is a horizon-long vector; metrics summarise how it
+# compared to the held-out window. ``mase`` is normalised by the
+# series' own in-sample naive MAE so it is comparable across
+# intermittent and smooth demand alike.
+class ModelScorecard(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_family: ModelFamilyName
+    series_key: str
+    fold_cutoff: str  # ISO date of the fold cutoff used for the backtest
+    horizon: int
+    forecast: list[float]
+    actual: list[float]
+    mae: float
+    rmse: float
+    mase: float
+    # ``bias`` is signed: positive = under-forecast, negative = over-forecast.
+    bias: float
+
+
+# A single robustness check the harness can run on a fitted model:
+# either the data-contract check (the model returned a properly-shaped
+# forecast, in the right units, with no NaN/inf), or a backtest gate
+# (the backtest scorecard is in-bounds for the model's claimed
+# performance). The model escalation path requires ALL of these to
+# pass before a custom model is accepted.
+class RobustnessCheck(BaseModel):
+    check: Literal["data_contract", "backtest", "robustness", "review"]
+    passed: bool
+    detail: str
+
+
+# The harness's unified request shape. ``fold_cutoffs`` is shared with
+# the Feature Factory so the same fold bands drive both the feature
+# computation and the backtest/train split. ``model_families`` lets
+# callers opt in / out of specific families without changing the
+# harness signature.
+class ForecastRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    run_id: str
+    # Feature table produced by ``build_feature_table``. Must contain
+    # ``series_key``, ``date``, ``demand`` plus any opt-in Phase 3
+    # families (``use_xgboost_global`` will need at least the lag /
+    # rolling / promo columns).
+    feature_table: list[dict] = Field(default_factory=list)
+    # Series-level target column. Defaults to ``"demand"``; provided as
+    # a hook for what-if reruns that forecast a different metric.
+    target_col: str = "demand"
+    fold_cutoffs: list[str] = Field(default_factory=list)
+    horizon: int = 1
+    model_families: list[ModelFamilyName] = Field(
+        default_factory=lambda: [
+            "naive",
+            "seasonal_naive",
+            "moving_average",
+            "exponential_smoothing",
+            "croston",
+            "xgboost_global",
+            "aggregate_allocate",
+        ]
+    )
+    # Optional per-segment demand class hints. When provided, the
+    # Croston family is enabled only for INTERMITTENT / LUMPY segments
+    # and the seasonal family is enabled only for SMOOTH / ERRATIC
+    # segments. When absent the harness uses a class-blind fallback
+    # (run all families, let the scorecard pick).
+    segment_sb_class: dict[str, SBClass] = Field(default_factory=dict)
+
+
+# The harness's unified output. ``series_results`` is a flat list of
+# per-series best-model picks; ``scorecards`` keeps the full backtest
+# history so the ensemble tracker and the promotion decision can
+# audit every fold.
+class ForecastHarnessReport(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    run_id: str
+    horizon: int
+    # Per-series best-model pick (small enough to ship in the cockpit).
+    series_results: list[SeriesResult]
+    # Full backtest history (larger; persisted to disk for review).
+    scorecards: list[ModelScorecard]
+    # Ensemble behaviour — segment weights and retire / promote / never
+    # surfaced lists. ``None`` for runs that did not invoke the
+    # ensemble layer (single-model fast paths).
+    ensemble: "EnsembleSummary | None" = None
+    # The aggregate set of robustness checks the harness ran. Phase 5
+    # will read this to gate promotion.
+    robustness_checks: list[RobustnessCheck] = Field(default_factory=list)
+    # When a model family ran but produced no usable forecast for any
+    # series (e.g. XGBoost on a 1-row history), the family name is
+    # recorded here. The ensemble layer uses this list to flag
+    # never-surfaced models.
+    never_surfaced: list[ModelFamilyName] = Field(default_factory=list)
+    # Markdown summary consumed by the cockpit / learning journal. The
+    # harness is the canonical place to surface what the platform
+    # did at fit time; downstream layers should not re-derive this.
+    narrative: str = ""
+
+
+# Per-segment ensemble metadata. ``weights`` is ``family -> weight``,
+# normalised so the values across a single segment sum to 1.0.
+# ``frequently_promoted`` and ``retired`` are reference snapshots of
+# the ``EnsembleTracker`` history so the cockpit can show "X has been
+# best in 80% of folds for INTERMITTENT segments" without re-running
+# the tracker.
+class EnsembleSummary(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    # ``segment_id -> family -> weight`` view. Empty for runs that did
+    # not produce an ensemble (single-family fallbacks).
+    weights: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # Families that have been best-in-fold for >= 50% of series in
+    # any segment over the run's history. Surfaced in the cockpit.
+    frequently_promoted: list[ModelFamilyName] = Field(default_factory=list)
+    # Families that fit successfully but were never best-in-fold.
+    never_surfaced: list[ModelFamilyName] = Field(default_factory=list)
+    # Families that were promoted in a prior run and have been
+    # replaced; we keep their scorecards around for audit but exclude
+    # them from the live ensemble weights.
+    retired: list[ModelFamilyName] = Field(default_factory=list)
+
+
+# Produced by ``model_escalation.declare_failure_report`` after the
+# three-attempt cap on a custom model family. The plan calls for the
+# block to be: data contract, backtest, robustness, review. The
+# attached failure report makes it easy for the cockpit to surface
+# the exact gate that failed.
+class ModelFailureReport(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    run_id: str
+    proposed_family: str  # free-text; not a ModelFamilyName because it may be a custom code path
+    status: Literal["blocked"] = "blocked"
+    blocker: str
+    evidence: list[str] = Field(default_factory=list)
+    attempts: int = 3
+    failed_reasons: dict[int, str] = Field(default_factory=dict)
+    failed_gates: list[Literal["data_contract", "backtest", "robustness", "review"]] = Field(default_factory=list)
+    recommended_next_action: str
+
+
+ForecastHarnessReport.model_rebuild()
