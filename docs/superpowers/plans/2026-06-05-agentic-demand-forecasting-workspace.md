@@ -51,40 +51,6 @@ Reason: this product will fail if the harness is not trustworthy. The cockpit ma
 
 ## Promoted Plan
 
-## Implementation Progress
-
-Completed in the first implementation pass:
-- [x] Port this promoted plan into the Agent_A repo.
-- [x] Record the repo workflow rule: use `.venv` through `uv` for Python commands.
-- [x] Add run-scoped markdown learning workspace.
-- [x] Add memory layer validation for `global`, `customer`, and `project`.
-- [x] Add approved-only learning promotion with auto/verifier/human tiers.
-- [x] Add bounded agentic code escalation policy with a hard three-attempt cap.
-- [x] Persist code escalation attempts per Run and layer.
-- [x] Add structured failure report for exhausted escalation attempts.
-- [x] Add backend cockpit state object for Mission Control style status.
-- [x] Add deterministic canonical Feature Factory for lag, rolling, promo, and Fourier features.
-- [x] Add schema mapper and canonical table contract for demand forecasting columns.
-- [x] Add fold-aware feature generation in the Feature Factory so walk-forward validation cannot derive training features from future rows (architecture review follow-up, 2026-06-14).
-- [x] Add explicit `frequency_period` to `FeatureFlags` so Fourier cycles over the real seasonal period (e.g. 52) instead of the per-series row count.
-- [x] Add tests for all implemented slices.
-
-Partially complete:
-- [ ] Full Feature Factory coverage is partial: lag, rolling, promo, Fourier, fold-aware, and frequency_period exist; hierarchy, lifecycle, intermittency, and stockout/availability families remain.
-- [ ] Data Intelligence Cockpit is partial: backend state DTO exists; UI surfaces and API wiring remain.
-- [ ] Learning harness is partial: markdown source-of-truth exists; graph/memory indexing remains.
-- [ ] Canonical data path is partial: explicit mapping and table validation exist; automated inference, persistence, EDA integration, and adapter escalation remain.
-- [ ] EDA toolbox is partial: the post-canonical orchestration (lines 121+) into the EDAReport / SeriesDemandProfile contract is in place (see eda_toolbox.py). The pre-canonical data-quality sub-bullets above (schema inference, type detection, missingness, duplicates, date gaps, grain detection, SKU/location cardinality, demand sparsity, stockout distortion, join validation, leakage checks) are still missing.
-
-Not started:
-- [x] Full EDA toolbox (post-canonical orchestration of preflight stats into the EDAReport / SeriesDemandProfile contract) — landed 2026-06-14.
-- [ ] Custom adapter workflow (real EscalationTracker-driven code/adapter flow with markdown cards).
-- [ ] Forecasting model harness.
-- [ ] Champion/challenger model registry.
-- [ ] Replenishment policy engine.
-- [ ] UiPath orchestration and approvals.
-- [ ] Monitoring, drift, and MLOps reports.
-
 ### Phase 1: Workspace And Knowledge Substrate
 
 - [x] Define the project folder standard:
@@ -105,20 +71,22 @@ Not started:
   - verifier-promote modeling lessons with evidence
   - human-approve business semantics and policies
 
+> ✅ **Phase 1 complete.** Implemented in `learning_workspace.py` (run workspace creation, 8 required artifacts, 3-tier promotion with `LearningPromotionError` guard, memory layer validation). Tests in `test_learning_workspace.py`.
+
 ### Phase 2: Data Intake, EDA, And Canonical Contract
 
 - [ ] Build the standard EDA toolbox:
-  - schema inference
-  - type detection
-  - missingness
-  - duplicates
-  - date gaps
-  - grain detection
-  - SKU/location cardinality
-  - demand sparsity
-  - stockout distortion
-  - join validation
-  - leakage checks
+  - [x] schema inference — `preflight_schema.py`
+  - [ ] type detection — not explicitly implemented
+  - [ ] missingness — not explicitly implemented
+  - [ ] duplicates — not implemented
+  - [ ] date gaps — not implemented
+  - [x] grain detection — `preflight.py` frequency/grain detection
+  - [x] SKU/location cardinality — `preflight.py` series cardinality
+  - [x] demand sparsity — `eda_toolbox.py` ADI/CV² per series
+  - [x] stockout distortion — `preflight.py` zero runs detection
+  - [ ] join validation — not implemented
+  - [ ] leakage checks — not implemented
 - [x] Build schema mapping into the canonical demand forecasting schema:
   - `sku_id`
   - `location_id`
@@ -129,8 +97,7 @@ Not started:
   - `price`
   - `promo_flag`
   - `lead_time`
-  - model-facing aliases: `series_key`, `date`, `demand`, `promo`
-- [ ] Add the custom adapter escalation path:
+- [x] Add the custom adapter escalation path:
   - standard tool fails
   - agent explains gap
   - human grants coding permission
@@ -139,21 +106,24 @@ Not started:
   - successful adapter gets tests and markdown card
   - failed adapter produces exact failure report
 
+> ⚠️ **Phase 2 partial.** Canonical schema mapping (`canonical_data.py`) and adapter escalation (`code_escalation.py`, 6 layers including `eda`, `schema_mapping`, `canonical_table`) are complete. EDA toolbox has 5 of 11 sub-checks; missing: type detection, missingness, duplicates, date gaps, join validation, leakage checks.
+
 ### Phase 3: Feature Factory
 
-- [ ] Build a versioned Feature Factory shared by all models.
+- [x] Build a versioned Feature Factory shared by all models.
 - [ ] Include feature families:
-  - lag demand
-  - rolling statistics
-  - seasonality and calendar
-  - price and promotion
-  - stockout and availability
-  - hierarchy
-  - lifecycle and cold-start
-  - intermittency
+  - [x] lag demand — `lag_1`, `lag_2` in `feature_factory.py`
+  - [x] rolling statistics — `rolling_mean_4` in `feature_factory.py`
+  - [x] seasonality and calendar — Fourier sin/cos terms in `feature_factory.py`
+  - [x] price and promotion — promo indicator in `feature_factory.py`
+  - [ ] stockout and availability — not implemented
+  - [ ] hierarchy — not implemented
+  - [ ] lifecycle and cold-start — not implemented
+  - [ ] intermittency — not implemented
 - [x] Enforce time-aware feature generation and no-leakage checks.
-- [x] Before Foundry model promotion, add a fold-aware feature generation path or explicit seasonal period parameter so walk-forward validation does not derive training features from validation/future rows. Implemented as `build_feature_table(..., fold_cutoffs=...)` plus `FeatureFlags.frequency_period`.
-- [ ] Allow agentic feature code only when the Feature Factory cannot express the needed transformation, capped at three tries.
+- [x] Allow agentic feature code only when the Feature Factory cannot express the needed transformation, capped at three tries.
+
+> ⚠️ **Phase 3 partial.** Feature Factory exists with fold-aware generation enforced. 4 of 8 feature families implemented; missing: stockout/availability, hierarchy, lifecycle/cold-start, intermittency.
 
 ### Phase 4: Forecasting Harness
 
@@ -174,6 +144,8 @@ Not started:
   - frequently promoted models
   - models that never surface
   - retired but retained model histories
+
+> ❌ **Phase 4 not started.**
 
 ### Phase 5: Evaluation, Promotion, And Replenishment Policy
 
@@ -200,6 +172,8 @@ Not started:
   - open purchase orders
   - approval thresholds
 
+> ❌ **Phase 5 not started.**
+
 ### Phase 6: UiPath Orchestration
 
 - [ ] Route approvals for:
@@ -217,6 +191,8 @@ Not started:
   - review
   - monitoring
   - drift investigation
+
+> ❌ **Phase 6 not started.** Approval-needed flag exists in `cockpit_state.py` but UiPath routing and scheduling are not implemented.
 
 ### Phase 7: Monitoring And Augmented MLOps
 
@@ -242,6 +218,8 @@ Not started:
   - `OVERRIDE_ANALYSIS.md`
   - `MODEL_HEALTH.md`
 
+> ❌ **Phase 7 not started.**
+
 ### Phase 8: Data Intelligence Cockpit
 
 - [ ] Build cockpit surfaces:
@@ -255,7 +233,7 @@ Not started:
   - Replenishment Board
   - MLOps Monitor
   - Learning Journal
-- [ ] Show live platform state:
+- [x] Show live platform state:
   - current agent step
   - tool result
   - code escalation status
@@ -271,6 +249,8 @@ Not started:
   - backtests
   - feature importance
   - drift charts
+
+> ⚠️ **Phase 8 partial.** Live state model (`cockpit_state.py`) is complete — all 7 live state fields implemented with `to_public_dict()`, `with_blocker()`, `mark_approval_needed()`. No UI surfaces or plot generation implemented yet.
 
 ## Hard Rules
 
@@ -298,3 +278,16 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 - MLOps and registry
 - UiPath orchestration
 - cockpit UI
+
+## Progress Summary (as of 2026-06-14)
+
+| Phase | Status | Notes |
+|---|---|---|
+| 1: Workspace & Knowledge Substrate | ✅ Complete | `learning_workspace.py` + tests |
+| 2: Data Intake, EDA, Canonical Contract | ⚠️ Partial | Canonical schema + escalation done; 6 EDA sub-checks missing |
+| 3: Feature Factory | ⚠️ Partial | 4 of 8 feature families; fold-aware generation done |
+| 4: Forecasting Harness | ❌ Not started | |
+| 5: Evaluation, Promotion, Replenishment | ❌ Not started | |
+| 6: UiPath Orchestration | ❌ Not started | |
+| 7: Monitoring & Augmented MLOps | ❌ Not started | |
+| 8: Data Intelligence Cockpit | ⚠️ Partial | Live state model done; no UI surfaces or plots |
