@@ -192,7 +192,7 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - segment scorecards
   - shadow mode where needed
   - promotion decision markdown
-- [x] Build deterministic replenishment policy (CB1 done 2026-06-17: lead-time demand + safety stock + ROP contracts and math; CB2 done 2026-06-17: MOQ + pack size + inventory reconciliation; CB3 done 2026-06-17: approval tiers; CB4 done 2026-06-17: ReplenishmentRecommendation + compute_replenishment orchestrator; CB5 pending):
+- [x] Build deterministic replenishment policy (CB1 done 2026-06-17: lead-time demand + safety stock + ROP contracts and math; CB2 done 2026-06-17: MOQ + pack size + inventory reconciliation; CB3 done 2026-06-17: approval tiers; CB4 done 2026-06-17: ReplenishmentRecommendation + compute_replenishment orchestrator; CB5 done 2026-06-17: full-chain integration tests — Phase 5.3 complete):
   - lead-time demand
   - safety stock
   - reorder point
@@ -202,7 +202,7 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - open purchase orders
   - approval thresholds
 
-> ✅ **Phase 5.1 (metric portfolio) and 5.2 (champion/challenger promotion) complete (2026-06-17).** 5.3 (replenishment policy) still pending.
+> ✅ **Phase 5 complete (2026-06-17).** 5.1 (metric portfolio) + 5.2 (champion/challenger promotion) + 5.3 (replenishment policy) all landed.
 
 ### Phase 6: UiPath Orchestration
 
@@ -318,7 +318,7 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 | 3: Feature Factory | ✅ Complete | All 8 families implemented in `feature_factory.py` (4 new: stockout/availability, hierarchy, lifecycle/cold-start, intermittency). Fold-aware band logic factored into `_iter_fold_bands()`. 16 new tests; 216 total pass. |
 | 4: Forecasting Harness | ✅ Complete | 6 governed model families + ensemble + custom-family escalation. `forecasting_models.py`, `ensemble.py`, `model_escalation.py`, `forecast_harness.py`. New contracts: `ModelFamilyName`, `ModelScorecard`, `RobustnessCheck`, `ForecastRequest`, `ForecastHarnessReport`, `EnsembleSummary`, `ModelFailureReport`. 83 new tests; 299 total pass. |
 | 4.1: Two-Path Escalation + Proposal Tool | ✅ Complete (2026-06-17) | 7 sub-checkboxes (CB1-CB7): Proposal contracts, decompose_residuals, propose_feature_changes, marginal-gain stop condition, config-escalation loop, card lifecycle, MODEL_REGISTRY provenance. 117 new tests (18+16+17+17+20+11+18); full suite 422 passing. `Escalation Path` term in `CONTEXT.MD`. |
-| 5: Evaluation, Promotion, Replenishment | ⚠️ Partial (2026-06-17) | 5.1 metric portfolio + 5.2 champion/challenger promotion complete (50 new tests; suite 492 passing). 5.3 replenishment policy still pending. |
+| 5: Evaluation, Promotion, Replenishment | ✅ Complete (2026-06-17) | 5.1 metric portfolio + 5.2 champion/challenger promotion + 5.3 deterministic replenishment policy. 105 new tests (20+17+10+11+8+9+7+5+18 misc); full suite 544 passing. New module `replenishment.py` (ReplenishmentConfig, InventoryState, ApprovalTier, ReplenishmentRecommendation, compute_lead_time_demand, compute_safety_stock, compute_reorder_point, compute_order_quantity, classify_approval_tier, compute_replenishment). |
 | 6: UiPath Orchestration | ❌ Not started | |
 | 7: Monitoring & Augmented MLOps | ❌ Not started | |
 | 8: Data Intelligence Cockpit | ⚠️ Partial | Live state model done; no UI surfaces or plots |

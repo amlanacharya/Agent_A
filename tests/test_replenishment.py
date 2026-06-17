@@ -139,18 +139,25 @@ def test_rop_equals_lead_time_plus_safety() -> None:
 
 
 def test_rop_zero_when_lead_time_demand_zero() -> None:
-    assert compute_reorder_point(0.0, 10.0) == 0.0
+    """Negative lead-time demand -> 0 (clamped).
 
-
-def test_rop_zero_when_safety_stock_zero() -> None:
-    """A zero safety stock means the platform doesn't buffer for uncertainty.
-
-    The ROP collapses to the lead-time demand alone — but
-    the policy enforces ROP >= 0, so this degenerate case
-    (negative safety stock would be caught earlier) returns
-    0.
+    A zero lead-time demand with positive safety stock is
+    *not* degenerate — the platform trusts the forecast's
+    timing and only buffers for uncertainty. ROP collapses
+    to the safety stock alone.
     """
-    assert compute_reorder_point(50.0, 0.0) == 0.0
+    assert compute_reorder_point(0.0, 10.0) == 10.0
+    assert compute_reorder_point(-5.0, 10.0) == 0.0
+
+
+def test_rop_collapses_to_lead_time_when_safety_stock_zero() -> None:
+    """A zero safety stock means a perfectly deterministic forecast.
+
+    The ROP collapses to the lead-time demand alone — the
+    platform trusts the forecast. Negative safety stock is
+    still degenerate (clamped to 0).
+    """
+    assert compute_reorder_point(50.0, 0.0) == 50.0
 
 
 def test_rop_negative_inputs_return_zero() -> None:
@@ -556,3 +563,143 @@ def test_compute_replenishment_is_deterministic() -> None:
     assert rec1.order_quantity == rec2.order_quantity
     assert rec1.reorder_point == rec2.reorder_point
     assert rec1.approval_tier == rec2.approval_tier
+
+
+# ---------------------------------------------------------------------------
+# Full-chain integration tests (CB5)
+# ---------------------------------------------------------------------------
+
+
+def test_full_chain_three_series_independent() -> None:
+    """Three series in one harness batch, each with its own inputs.
+
+    The recommendation for one series must not contaminate
+    another. (Today the function is per-series so this is
+    almost tautological, but the test pins the contract:
+    'call compute_replenishment separately for each series'.)
+    """
+    cfg = ReplenishmentConfig(pack_size=5, moq=10)
+    forecasts = {
+        "A": ([10.0, 12.0, 14.0, 16.0], _inv(current=20.0, open_pos=0.0)),
+        "B": ([5.0, 5.0, 5.0, 5.0], _inv(current=0.0, open_pos=0.0)),
+        "C": ([100.0, 100.0, 100.0, 100.0], _inv(current=500.0, open_pos=0.0)),
+    }
+    recommendations = {
+        sk: compute_replenishment(
+            series_key=sk,
+            forecast=fc,
+            lead_time_days=4,
+            forecast_std=5.0,
+            inventory=inv,
+            config=cfg,
+        )
+        for sk, (fc, inv) in forecasts.items()
+    }
+    # A: lead_time_demand=52, target~70, current=20 -> order positive.
+    assert recommendations["A"].order_quantity > 0
+    # B: lead_time_demand=20, target~36, current=0 -> order positive.
+    assert recommendations["B"].order_quantity > 0
+    # C: lead_time_demand=400, target~420, current=500 -> no order.
+    assert recommendations["C"].order_quantity == 0
+    assert recommendations["C"].approval_tier == "auto"
+
+
+def test_full_chain_with_degenerate_forecast_zero_std() -> None:
+    """sigma=0 -> safety_stock=0 -> ROP = lead_time_demand only.
+
+    The order covers exactly the lead-time demand (the
+    platform trusts a perfectly deterministic forecast).
+    """
+    cfg = ReplenishmentConfig(pack_size=1, moq=1)
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=[10.0, 12.0, 14.0, 16.0],
+        lead_time_days=4,
+        forecast_std=0.0,  # perfectly deterministic
+        inventory=_inv(current=0.0),
+        config=cfg,
+    )
+    assert rec.safety_stock == 0.0
+    assert rec.reorder_point == 52.0  # pure lead-time demand
+    assert rec.target_inventory == 52.0
+    assert rec.order_quantity == 52.0
+
+
+def test_full_chain_with_open_po_just_below_target() -> None:
+    """open_pos = ROP + safety - 1 -> raw = 1 -> small positive order.
+
+    Pins: the platform surfaces a tiny order (1 unit) when
+    the open POs are *just* below the target, rather than
+    silently returning zero. The exact tier is config-dependent
+    (1 <= small_threshold=100 -> small), so the test asserts
+    the positive-order property, not the tier.
+    """
+    cfg = ReplenishmentConfig(pack_size=1, moq=1)
+    # Build a setup where target = 100 exactly: lead_time_demand
+    # = 100, sigma chosen so safety_stock = 0, ROP = 100,
+    # target_inventory = 100. open_pos = 99 -> raw = 1.
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=[25.0] * 4,  # lead_time_demand = 100
+        lead_time_days=4,
+        forecast_std=0.0,  # safety_stock = 0
+        inventory=_inv(current=0.0, open_pos=99.0),
+        config=cfg,
+    )
+    assert rec.reorder_point == 100.0
+    assert rec.target_inventory == 100.0
+    assert rec.order_quantity == 1.0
+    # The tier depends on the config's small_threshold; default
+    # is 100, so 1 -> small. The important property is that the
+    # order surfaces (not zero), not which tier it lands in.
+    assert rec.order_quantity > 0
+
+
+def test_full_chain_with_pack_size_larger_than_raw() -> None:
+    """pack_size=100, raw=3 -> ceil(3/100)*100 = 100.
+
+    Pins: a small raw quantity with a large pack size jumps
+    up to the next pack boundary. The recommendation still
+    classifies the order correctly.
+    """
+    cfg = ReplenishmentConfig(
+        pack_size=100, moq=1,
+        approval_threshold_small=50.0,
+        approval_threshold_large=500.0,
+    )
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=[1.0] * 4,  # lead_time_demand = 4
+        lead_time_days=4,
+        forecast_std=0.0,
+        inventory=_inv(),
+        config=cfg,
+    )
+    assert rec.order_quantity == 100.0  # ceil(4/100)*100
+    assert rec.approval_tier == "medium"  # 100 > 50 (small) and <= 500 (large)
+
+
+def test_full_chain_recommendation_is_pydantic_serialisable() -> None:
+    """The recommendation round-trips through model_dump.
+
+    The cockpit serialises the recommendation; if it can't,
+    the audit log is broken.
+    """
+    cfg = ReplenishmentConfig(pack_size=5, moq=15)
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=[10.0, 12.0, 14.0, 16.0, 18.0, 20.0],
+        lead_time_days=4,
+        forecast_std=2.0,
+        inventory=_inv(current=20.0, open_pos=10.0),
+        config=cfg,
+    )
+    dumped = rec.model_dump()
+    # Required keys are all present and have the right types.
+    assert dumped["series_key"] == "A"
+    assert isinstance(dumped["lead_time_demand"], float)
+    assert isinstance(dumped["approval_tier"], str)
+    # Round-trip: re-construct from the dump.
+    restored = ReplenishmentRecommendation.model_validate(dumped)
+    assert restored.order_quantity == rec.order_quantity
+    assert restored.approval_tier == rec.approval_tier

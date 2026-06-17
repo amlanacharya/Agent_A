@@ -149,8 +149,14 @@ def compute_reorder_point(
     Pure addition. Negative inputs return 0.0 — the caller
     may have a degenerate config; we surface as "no ROP"
     rather than a negative number.
+
+    Safety stock of 0 is *not* a degenerate case — it just
+    means the platform trusts the forecast (a perfectly
+    deterministic forecast has no uncertainty to buffer).
+    In that case ROP collapses to the lead-time demand, and
+    the recommendation still works.
     """
-    if lead_time_demand <= 0 or safety_stock <= 0:
+    if lead_time_demand < 0 or safety_stock < 0:
         return 0.0
     return float(lead_time_demand + safety_stock)
 
