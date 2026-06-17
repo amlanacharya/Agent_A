@@ -152,9 +152,99 @@ def compute_reorder_point(
     return float(lead_time_demand + safety_stock)
 
 
+# ---------------------------------------------------------------------------
+# CB2: order quantity (MOQ + pack size + inventory reconciliation)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InventoryState:
+    """The current inventory posture at order time.
+
+    ``current_inventory`` is the on-hand quantity at the
+    moment the order is being computed (case-pack-partial
+    units are fine — it's a float).
+
+    ``open_purchase_orders`` is the quantity already on
+    order with the supplier but not yet received. These
+    reduce the recommended order because they will arrive
+    before the inventory runs out (assuming the supplier
+    delivers on schedule — a separate concern).
+
+    Both fields default to 0.0 (no inventory, no open POs)
+    so the dataclass can be constructed without arguments
+    in tests.
+    """
+
+    current_inventory: float = 0.0
+    open_purchase_orders: float = 0.0
+
+
+def compute_order_quantity(
+    *,
+    target_inventory: float,
+    inventory: InventoryState,
+    config: ReplenishmentConfig,
+) -> float:
+    """Compute the order quantity from a target inventory level.
+
+    Steps:
+
+    1. ``raw_qty = target_inventory - current_inventory - open_pos``
+    2. If ``raw_qty <= 0`` -> 0.0 (no order needed; inventory
+       alone covers the target).
+    3. Round ``raw_qty`` UP to a multiple of ``pack_size``:
+       ``packed = ceil(raw_qty / pack_size) * pack_size``.
+       Never round down — under-ordering leaves the platform
+       short.
+    4. Enforce MOQ as a floor: if ``packed < moq``, set
+       ``packed = moq``. The supplier won't ship less than
+       MOQ even if pack_size * 1 is below it.
+    5. Return ``packed``.
+
+    Edge cases:
+
+    * ``target_inventory <= 0`` -> 0.0 (no positive target,
+      no order).
+    * ``pack_size <= 0`` is treated as ``pack_size = 1``
+      (defensive — a degenerate config surface as "pack
+      ignored" rather than a math error).
+    * ``moq <= 0`` is treated as ``moq = 1``.
+    * The order quantity is a float; the float's fractional
+      part is meaningful only when pack_size is non-unit.
+      With pack_size=1 and moq=1, the order is exactly
+      ``raw_qty`` as a float.
+
+    Returns 0.0 for "no order needed" — the caller branches
+    on the return value to decide whether to skip the
+    approval workflow entirely.
+    """
+    if target_inventory <= 0:
+        return 0.0
+    raw_qty = target_inventory - inventory.current_inventory - inventory.open_purchase_orders
+    if raw_qty <= 0:
+        return 0.0
+    pack_size = max(int(config.pack_size), 1)
+    moq = max(int(config.moq), 1)
+    # Round UP to a multiple of pack_size. When pack_size=1
+    # the rounding is a no-op (raw_qty is already a whole or
+    # fractional unit that the platform can order in any
+    # quantity). For pack_size > 1 the ceil-bump ensures the
+    # order covers at least the raw need.
+    if pack_size > 1:
+        packed = math.ceil(raw_qty / pack_size) * pack_size
+    else:
+        packed = raw_qty
+    if packed < moq:
+        packed = moq
+    return float(packed)
+
+
 __all__ = (
     "ReplenishmentConfig",
+    "InventoryState",
     "compute_lead_time_demand",
     "compute_safety_stock",
     "compute_reorder_point",
+    "compute_order_quantity",
 )

@@ -12,8 +12,10 @@ import math
 import pytest
 
 from forecasting.replenishment import (
+    InventoryState,
     ReplenishmentConfig,
     compute_lead_time_demand,
+    compute_order_quantity,
     compute_reorder_point,
     compute_safety_stock,
 )
@@ -182,3 +184,138 @@ def test_safety_stock_is_deterministic() -> None:
 
 def test_rop_is_deterministic() -> None:
     assert compute_reorder_point(50.0, 10.0) == compute_reorder_point(50.0, 10.0)
+
+
+# ---------------------------------------------------------------------------
+# compute_order_quantity (CB2)
+# ---------------------------------------------------------------------------
+
+
+def _inv(current: float = 0.0, open_pos: float = 0.0) -> InventoryState:
+    """Build an InventoryState with the given values."""
+    return InventoryState(current_inventory=current, open_purchase_orders=open_pos)
+
+
+def test_order_quantity_zero_when_inventory_above_target() -> None:
+    """Current inventory alone covers the target -> no order."""
+    cfg = ReplenishmentConfig()
+    # Target 50, current 60 -> raw = -10 -> no order.
+    assert compute_order_quantity(
+        target_inventory=50.0,
+        inventory=_inv(current=60.0),
+        config=cfg,
+    ) == 0.0
+
+
+def test_order_quantity_zero_when_inventory_plus_open_pos_equals_target() -> None:
+    """Inventory + open POs already match the target -> no order."""
+    cfg = ReplenishmentConfig()
+    # Target 50, current 30, open_pos 20 -> raw = 0 -> no order.
+    assert compute_order_quantity(
+        target_inventory=50.0,
+        inventory=_inv(current=30.0, open_pos=20.0),
+        config=cfg,
+    ) == 0.0
+
+
+def test_order_quantity_rounds_up_to_pack_size() -> None:
+    """A raw quantity of 23 with pack_size=10 rounds up to 30."""
+    cfg = ReplenishmentConfig(pack_size=10, moq=1)
+    # raw 23 -> ceil(23/10)*10 = 30
+    assert compute_order_quantity(
+        target_inventory=23.0,
+        inventory=_inv(),
+        config=cfg,
+    ) == 30.0
+
+
+def test_order_quantity_handles_partial_pack_remainder() -> None:
+    """A raw quantity exactly at a pack boundary doesn't bump up unnecessarily."""
+    cfg = ReplenishmentConfig(pack_size=10, moq=1)
+    # raw 20 -> ceil(20/10)*10 = 20 (no bump)
+    assert compute_order_quantity(
+        target_inventory=20.0,
+        inventory=_inv(),
+        config=cfg,
+    ) == 20.0
+
+
+def test_order_quantity_enforces_moq() -> None:
+    """A packed quantity below MOQ is bumped up to MOQ."""
+    cfg = ReplenishmentConfig(pack_size=10, moq=50)
+    # raw 23 -> packed 30 (from ceil), but moq=50 -> bumped to 50.
+    assert compute_order_quantity(
+        target_inventory=23.0,
+        inventory=_inv(),
+        config=cfg,
+    ) == 50.0
+
+
+def test_order_quantity_default_moq_pack_size_one_passes_through() -> None:
+    """Default config (pack=1, moq=1) passes the raw quantity through unchanged."""
+    cfg = ReplenishmentConfig()
+    # raw 23.7 -> packed = ceil(23.7/1)*1 = 23.7
+    assert compute_order_quantity(
+        target_inventory=23.7,
+        inventory=_inv(),
+        config=cfg,
+    ) == 23.7
+
+
+def test_order_quantity_subtracts_open_purchase_orders() -> None:
+    """Open POs reduce the recommended order quantity."""
+    cfg = ReplenishmentConfig(pack_size=1, moq=1)
+    # Target 100, current 20, open_pos 30 -> raw = 50
+    assert compute_order_quantity(
+        target_inventory=100.0,
+        inventory=_inv(current=20.0, open_pos=30.0),
+        config=cfg,
+    ) == 50.0
+
+
+def test_order_quantity_zero_when_target_is_zero_or_negative() -> None:
+    """Degenerate target_inventory -> no order (clamped to 0)."""
+    cfg = ReplenishmentConfig()
+    assert compute_order_quantity(
+        target_inventory=0.0, inventory=_inv(), config=cfg,
+    ) == 0.0
+    assert compute_order_quantity(
+        target_inventory=-10.0, inventory=_inv(), config=cfg,
+    ) == 0.0
+
+
+def test_order_quantity_handles_degenerate_pack_and_moq() -> None:
+    """pack_size <= 0 and moq <= 0 are treated as 1 (defensive)."""
+    cfg = ReplenishmentConfig(pack_size=0, moq=0)
+    # Degenerate knobs become 1; raw 23.7 -> packed 23.7.
+    assert compute_order_quantity(
+        target_inventory=23.7,
+        inventory=_inv(),
+        config=cfg,
+    ) == 23.7
+
+
+def test_order_quantity_is_deterministic() -> None:
+    """Same inputs -> same output."""
+    cfg = ReplenishmentConfig(pack_size=10, moq=50)
+    inv = _inv(current=20.0, open_pos=30.0)
+    q1 = compute_order_quantity(
+        target_inventory=100.0, inventory=inv, config=cfg
+    )
+    q2 = compute_order_quantity(
+        target_inventory=100.0, inventory=inv, config=cfg
+    )
+    assert q1 == q2
+
+
+def test_order_quantity_full_chain_example() -> None:
+    """ROP=58.6 from CB1, current=20, open_pos=10, pack=5, moq=15.
+
+    raw = 58.6 - 20 - 10 = 28.6 -> ceil(28.6/5)*5 = 30 -> >= moq=15 -> 30.
+    """
+    cfg = ReplenishmentConfig(pack_size=5, moq=15)
+    assert compute_order_quantity(
+        target_inventory=58.6,
+        inventory=_inv(current=20.0, open_pos=10.0),
+        config=cfg,
+    ) == 30.0
