@@ -230,3 +230,17 @@ _Avoid_: Cron job, schedule entry, task
 **ERP Handoff Payload**:
 The typed package released to ERP/procurement after a human approves a replenishment batch. Built only from an `approved` request; pending or rejected requests are a hard block (`RequestNotApprovedError`). Carries the per-series recommendations (narrowed to the fields ERP needs), the approval summary (approver, reason, timestamp), and the full audit trail joined from the gateway's event log. The release is pure — it produces the payload; the caller (the cockpit UI, a cron job, a webhook, a future external integration) decides where the payload lands and how it reaches ERP.
 _Avoid_: Release package, ERP request, posting payload
+
+### Monitoring Boundary (Phase 7)
+
+**Monitor Snapshot**:
+The typed envelope that joins the three Phase 7 monitoring reports — `DataDriftReport`, `ModelDriftReport`, `BusinessOutcomesReport` — for one monitoring tick, with a `generated_at` timestamp. One snapshot per run. The three engines (`detect_data_drift`, `detect_model_drift`, `summarise_business_outcomes`) populate the fields; the four markdown report writers (`write_monitoring_report`, `write_drift_report`, `write_override_analysis`, `write_model_health`) persist the snapshot as both JSON and markdown so the cockpit can read the previous tick without re-running the math. The snapshot is the seam: an alternative drift-detection backend (Evidently AI, Arize Phoenix, a custom monitor service) can plug in behind the same `MonitorSnapshot` contract without changing the rest of the platform.
+_Avoid_: Monitoring report, drift report, monitor output
+
+**Drift Report**:
+One of the four recurring markdown artifacts the platform emits on a monitoring tick. The drift detail lives in `DRIFT_REPORT.md`; the data-drift portion surfaces schema changes (columns added / dropped / type-changed), missing feeds (keys in the previous run absent from the current), distribution shifts (per-column mean / std / median / p99 / min / max deltas above the 5% default threshold), and new SKU / location keys. The model-drift portion surfaces the population-level MASE / bias deltas and the per-segment degradation table. The drift threshold is `.env`-configurable; the default 5% matches the platform's other thresholds (card-lifecycle, marginal-gain). The report is a generated artifact; the `.gitignore` excludes the filename, the workspace markdown is the durable source of truth.
+_Avoid_: Data report, model report, monitoring summary
+
+**Model Health**:
+One of the four recurring markdown artifacts the platform emits on a monitoring tick. Lives in `MODEL_HEALTH.md`. Surfaces the population-level MASE and bias (previous, current, signed delta) plus the per-segment degradation table. The interval calibration field is a seam — it stays `None` until the platform grows quantile support, and the report renders that absence as "not yet emitted" rather than `None` so the planner understands the gap is intentional, not a bug. The model health view is the data-scientist-facing slice of the MLOps Monitor; the monitoring report is the top-level rollup, the drift report is the data + model drift detail, the override analysis is the planner-facing slice.
+_Avoid_: Model summary, health report, MASE report
