@@ -168,7 +168,7 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - keep/kill on marginal MASE gain (threshold from `.env`, default 0.02)
   - per-knob-type attempt cap (default 3 per Run)
   - stops when target is hit, marginal gain is below threshold for 2 consecutive attempts, or the cap is reached
-- [ ] Add the marginal-gain stop condition as a first-class concept (`.env`-configurable threshold, applies to both config and code rounds in self-correction)
+- [x] Add the marginal-gain stop condition as a first-class concept (`.env`-configurable threshold, applies to both config and code rounds in self-correction) (CB4, completed 2026-06-17).
 - [ ] Add card lifecycle rules to `learning_workspace.py`:
   - `runs_validated >= 2` for a card to be active
   - card retires after 2 consecutive MASE regressions when applied
