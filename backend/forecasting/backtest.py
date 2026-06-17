@@ -26,12 +26,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from forecasting.contracts import ModelFamilyName, ModelScorecard
+from forecasting.contracts import ModelFamilyName, ModelScorecard, RobustnessCheck
 from forecasting.forecasting_models import (
     ForecastingModel,
     ForecastingModelError,
 )
-from forecasting.model_escalation import check_data_contract
 
 
 if TYPE_CHECKING:
@@ -109,6 +108,48 @@ def _naive_mae(history: pd.Series) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Data-contract gate
+# ---------------------------------------------------------------------------
+
+
+def _check_data_contract(
+    *,
+    forecast: list[float],
+    actual: list[float] | None,
+    horizon: int,
+) -> RobustnessCheck:
+    """Validate the data-contract gate (private to this module).
+
+    The forecast must be a horizon-long numeric vector with no NaN
+    or infinity. The actuals are checked for length parity but are
+    not required to be all-present (an empty actuals list means we
+    are in inference mode, not a backtest).
+
+    Lives here, not in :mod:`forecasting.model_escalation`, because
+    it is a pure evaluation primitive on a single fold's output, not
+    a gate over the whole report. Inlining keeps the dependency
+    direction honest: ``backtest`` depends on ``contracts`` and
+    ``forecasting_models`` only.
+    """
+    issues: list[str] = []
+    if not isinstance(forecast, list):
+        issues.append("forecast must be a list")
+    if len(forecast) != horizon:
+        issues.append(f"forecast length {len(forecast)} != horizon {horizon}")
+    for index, value in enumerate(forecast):
+        if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
+            issues.append(f"forecast[{index}] is not finite")
+            break
+    if actual is not None and len(actual) != len(forecast):
+        issues.append(f"actual length {len(actual)} != forecast length {len(forecast)}")
+    return RobustnessCheck(
+        check="data_contract",
+        passed=not issues,
+        detail="; ".join(issues) if issues else "forecast shape and finiteness ok",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public operation
 # ---------------------------------------------------------------------------
 
@@ -176,7 +217,7 @@ def backtest_one_fold(
     # and the only one that catches degenerate forecasts (NaN,
     # wrong length, infinity). The other gates live in
     # ``model_escalation`` and are run on the final report.
-    data_check = check_data_contract(forecast=forecast, actual=actuals.tolist(), horizon=horizon)
+    data_check = _check_data_contract(forecast=forecast, actual=actuals.tolist(), horizon=horizon)
     if not data_check.passed:
         return BacktestResult(
             scorecard=None,
