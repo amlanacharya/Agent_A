@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, get_args
+from collections.abc import Sequence
 
 from pydantic import BaseModel, Field
 
@@ -338,6 +339,113 @@ def update_card_after_run(
     )
 
 
+# ---------------------------------------------------------------------------
+# Model Registry provenance (Phase 4.1 CB7)
+# ---------------------------------------------------------------------------
+# ``MODEL_REGISTRY.md`` is the audit log for model selection
+# decisions: which model family was registered, the MASE that
+# justified the registration, the Proposal[] trail that
+# produced the change, and when it happened. The format is
+# stable markdown so a future reader can grep the file and
+# answer "why was this model chosen?" without running any
+# code.
+#
+# Design rules:
+#
+# * **Append-only.** The registry is the audit log. Existing
+#   entries are never modified; new entries go to the bottom
+#   of the file (after the heading block). This matches the
+#   ``promote_learning`` / ``_append_under_heading`` pattern.
+# * **Pure formatter, separate I/O function.** ``format_provenance_entry``
+#   is a pure function; ``record_proposal_provenance`` does the
+#   file write. Tests pin the format without touching disk.
+# * **Empty proposals is valid.** A model can be registered
+#   from the baseline (no proposal trail) — the entry just
+#   records "no proposals; baseline model". The audit doesn't
+#   have to guess.
+# * **One entry per registration.** A model can be re-registered
+#   with a new MASE and a new proposal trail; each registration
+#   is a new entry. The reader can see the evolution.
+
+MODEL_REGISTRY_HEADING = "Registered Models"
+
+
+def _format_proposal_line(proposal: Proposal) -> str:
+    """One-line summary of a Proposal for the registry entry.
+
+    Kept short so a 5-proposal trail is still readable in the
+    markdown. Includes the action (or kind), the target, and
+    the rationale — enough for the audit to answer "why was
+    this chosen?" without re-running the harness.
+    """
+    action = proposal.config_action or proposal.code_action or "?"
+    target = proposal.target.series_key or proposal.target.segment_id or "?"
+    return f"  - `{action}` -> {target}: {proposal.rationale}"
+
+
+def format_provenance_entry(
+    *,
+    model_family: str,
+    proposals: Sequence[Proposal],
+    mase: float,
+    created_at: datetime,
+) -> str:
+    """Format a provenance entry as markdown.
+
+    Pure function: same inputs -> same markdown block. The
+    block is appended to ``MODEL_REGISTRY.md`` by
+    :func:`record_proposal_provenance`. Returns the markdown
+    text WITHOUT the surrounding ``## Registered Models``
+    heading — the append function inserts the heading on the
+    first entry.
+
+    When ``proposals`` is empty, the entry records "no
+    proposals; baseline model" so the audit doesn't have to
+    guess. When ``proposals`` is non-empty, each Proposal is
+    rendered as a one-line bullet under the entry.
+    """
+    timestamp = created_at.isoformat()
+    if not proposals:
+        proposals_block = "  - (no proposals; baseline model)"
+    else:
+        proposals_block = "\n".join(_format_proposal_line(p) for p in proposals)
+    return (
+        f"### {model_family} (MASE={mase:.3f}, {timestamp})\n"
+        f"Proposals that produced this registration:\n"
+        f"{proposals_block}\n"
+    )
+
+
+def record_proposal_provenance(
+    workspace: RunWorkspace,
+    *,
+    model_family: str,
+    proposals: Sequence[Proposal],
+    mase: float,
+    created_at: datetime,
+) -> None:
+    """Append a provenance entry to ``MODEL_REGISTRY.md``.
+
+    The entry is appended under the ``## Registered Models``
+    heading (created on the first call). Existing entries are
+    preserved; the registry is append-only.
+
+    The function uses the same ``_append_under_heading`` helper
+    as :func:`promote_learning` for consistency with the rest
+    of the workspace markdown surface.
+    """
+    _assert_mutable_run(workspace.run_id)
+    registry_path = workspace.artifacts["MODEL_REGISTRY.md"]
+    text = registry_path.read_text()
+    entry = format_provenance_entry(
+        model_family=model_family,
+        proposals=proposals,
+        mase=mase,
+        created_at=created_at,
+    )
+    registry_path.write_text(_append_under_heading(text, MODEL_REGISTRY_HEADING, entry))
+
+
 __all__ = (
     "MemoryLayer",
     "LearningTier",
@@ -357,4 +465,8 @@ __all__ = (
     "load_card_lifecycle_config",
     "should_retire_on_regression",
     "update_card_after_run",
+    # Model Registry provenance (CB7)
+    "MODEL_REGISTRY_HEADING",
+    "format_provenance_entry",
+    "record_proposal_provenance",
 )

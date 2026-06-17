@@ -174,8 +174,8 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - card retires after 2 consecutive MASE regressions when applied
   - card retires at `card_max_age` (`.env`, default 90 days)
   - retired cards stay in `LEARNINGS.md` for the audit trail
-- [ ] Tests for the proposal tool, the config loop, the stop condition, and the card lifecycle
-- [ ] Update `MODEL_REGISTRY.md` template to record which `Proposal[]` produced each model
+- [x] Tests for the proposal tool, the config loop, the stop condition, and the card lifecycle (completed across CB3/CB4/CB5/CB6 — 70 new tests total).
+- [x] Update `MODEL_REGISTRY.md` template to record which `Proposal[]` produced each model (CB7, completed 2026-06-17 — Phase 4.1 complete).
 
 ### Phase 5: Evaluation, Promotion, And Replenishment Policy
 
@@ -317,7 +317,7 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 | 2: Data Intake, EDA, Canonical Contract | ✅ Complete | `eda_probes.py` (6 new sub-checks) wired into `build_eda_report`; canonical schema + escalation unchanged. 200 tests pass. |
 | 3: Feature Factory | ✅ Complete | All 8 families implemented in `feature_factory.py` (4 new: stockout/availability, hierarchy, lifecycle/cold-start, intermittency). Fold-aware band logic factored into `_iter_fold_bands()`. 16 new tests; 216 total pass. |
 | 4: Forecasting Harness | ✅ Complete | 6 governed model families + ensemble + custom-family escalation. `forecasting_models.py`, `ensemble.py`, `model_escalation.py`, `forecast_harness.py`. New contracts: `ModelFamilyName`, `ModelScorecard`, `RobustnessCheck`, `ForecastRequest`, `ForecastHarnessReport`, `EnsembleSummary`, `ModelFailureReport`. 83 new tests; 299 total pass. |
-| 4.1: Two-Path Escalation + Proposal Tool | ❌ Not started | `propose_feature_changes` + `decompose_residuals` tools; config-escalation loop in `foundry_modelling`; marginal-gain stop condition; card lifecycle in `learning_workspace`. Resolved 2026-06-17 — `Escalation Path` term in `CONTEXT.MD`. |
+| 4.1: Two-Path Escalation + Proposal Tool | ✅ Complete (2026-06-17) | 7 sub-checkboxes (CB1-CB7): Proposal contracts, decompose_residuals, propose_feature_changes, marginal-gain stop condition, config-escalation loop, card lifecycle, MODEL_REGISTRY provenance. 117 new tests (18+16+17+17+20+11+18); full suite 422 passing. `Escalation Path` term in `CONTEXT.MD`. |
 | 5: Evaluation, Promotion, Replenishment | ❌ Not started | |
 | 6: UiPath Orchestration | ❌ Not started | |
 | 7: Monitoring & Augmented MLOps | ❌ Not started | |
