@@ -216,3 +216,17 @@ _Avoid_: Session, job, task, execution
 **Scenario Run**:
 A child of a Run that re-executes partial pipeline steps (Forge + Foundry) with overrides applied. Created by Prism. Does not start a new conversation — it inherits the parent Run's confirmed domain context.
 _Avoid_: What-if run, child run, Prism run
+
+### Orchestration Boundary (Phase 6)
+
+**Approval Request**:
+A typed request the platform raises when a decision needs a human (data contract, replenishment batch, ERP release, etc.). The platform owns the request shape (`ApprovalRequest` in `contracts.py`); the gateway — in-process or UiPath — owns the storage and the round-trip back to the human. Carries a `kind` (one of seven closed Literal values), a `payload` preview, a `requested_by`, and the `status` (`pending` / `approved` / `rejected`). `DEFER` is a non-terminal decision: the request stays `pending` and can be acknowledged again later.
+_Avoid_: Approval flag, review task, decision ticket
+
+**Scheduled Job**:
+One tick of a registered `ScheduledJobTrigger` against an injected runner. The scheduler owns the cron evaluation and the skip-while-active guard; the runner owns the work. Each fire produces a `ScheduledJobRun` audit record. A trigger whose previous run is still `running` or `awaiting_approval` is skipped, not stacked. Cron expressions are restricted to four forms (`every Nm`, `every Nh`, `hourly`, `daily HH:MM`) — a full cron parser is out of scope.
+_Avoid_: Cron job, schedule entry, task
+
+**ERP Handoff Payload**:
+The typed package released to ERP/procurement after a human approves a replenishment batch. Built only from an `approved` request; pending or rejected requests are a hard block (`RequestNotApprovedError`). Carries the per-series recommendations (narrowed to the fields ERP needs), the approval summary (approver, reason, timestamp), and the full audit trail joined from the gateway's event log. The UiPath-side performer workflow consumes this payload unchanged.
+_Avoid_: Release package, ERP request, posting payload
