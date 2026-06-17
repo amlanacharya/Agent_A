@@ -389,13 +389,190 @@ def compare_candidate_to_champion(
     )
 
 
+# ---------------------------------------------------------------------------
+# Shadow-mode runner (Phase 5.2 CB3)
+# ---------------------------------------------------------------------------
+# Shadow mode runs both models on the same canonical table and
+# compares their forecasts step-by-step. It is *not* a metric
+# comparison (the WAPE / per-segment WAPE from CB2 cover that).
+# It is a check on whether the candidate's forecasts are
+# numerically close to the champion's — a large disagreement
+# at the same (series, fold) is a red flag that the
+# candidate is producing qualitatively different output, even
+# if its average WAPE is comparable.
+#
+# Design rules:
+#
+# * **Pure function.** No I/O, no LLM, no harness re-run.
+#   The scorecards are inputs; the function returns a typed
+#   ``ShadowModeResult``. The scorecards are produced by the
+#   same canonical table (the candidate and champion were
+#   both scored on the same folds), so the comparison is
+#   well-defined.
+# * **Per-series pairs.** The output is a dict[series_key,
+#   list[(candidate_forecast, champion_forecast)]] — one
+#   tuple per forecast step. The list length matches the
+#   scorecard's horizon. The audit can grep the result for
+#   specific (series, step) disagreements.
+# * **Relative agreement.** A pair is "in agreement" when
+#   ``|cand - champ| / max(|champ|, eps) <= tolerance``. The
+#   ``max(..., eps)`` branch handles the champion-forecast-
+#   equals-zero case where relative error is undefined.
+# * **No window filter.** Shadow mode is independent of
+#   ``BacktestWindow`` — every scorecard on each side is
+#   compared. The window is a comparison constraint; shadow
+#   mode is an inspection tool.
+
+
+# Threshold below which |champion| is treated as "zero" for the
+# relative-error denominator. Without this, a champion
+# forecast of exactly 0 would make relative error explode
+# (division by zero) or every disagreement look like 100%.
+_ZERO_EPS = 1e-9
+
+
+class ShadowModeResult(BaseModel):
+    """The outcome of one shadow-mode run.
+
+    ``per_series_pairs`` maps ``series_key`` to a list of
+    ``(candidate_forecast, champion_forecast)`` tuples, one
+    per forecast step. The audit uses this to inspect any
+    specific disagreement.
+
+    ``agreement_rate`` is the fraction of (series, step)
+    pairs where the candidate and champion forecasts are
+    within ``tolerance`` of each other (relative tolerance,
+    ``|delta| / max(|champion|, eps) <= tolerance``).
+    1.0 = perfect agreement; 0.0 = total disagreement.
+    """
+
+    candidate_family: ModelFamilyName
+    champion_family: ModelFamilyName
+    tolerance: float
+    per_series_pairs: dict[str, list[tuple[float, float]]]
+    agreement_rate: float
+
+
+def _index_scorecards_by_series(
+    scorecards: list[ModelScorecard],
+) -> dict[str, list[ModelScorecard]]:
+    """Group scorecards by ``series_key``.
+
+    The function emits one pair-list per series; multiple
+    folds per series produce multiple scorecards that get
+    paired fold-by-fold (best-effort: same fold_cutoff first,
+    then any leftover).
+    """
+    out: dict[str, list[ModelScorecard]] = {}
+    for card in scorecards:
+        out.setdefault(card.series_key, []).append(card)
+    return out
+
+
+def _pair_forecasts(
+    candidate_cards: list[ModelScorecard],
+    champion_cards: list[ModelScorecard],
+) -> list[tuple[float, float]]:
+    """Pair (candidate, champion) forecasts step-by-step.
+
+    Pairs by ``fold_cutoff`` first (the natural fold alignment),
+    falling back to positional pairing for scorecards whose
+    fold_cutoff doesn't match. The result length is the
+    candidate's horizon (the runner treats the candidate's
+    list as the canonical ordering — if the lists differ in
+    length, the longer is truncated).
+
+    Returns a flat list of (candidate_step, champion_step)
+    tuples across all folds. The caller splits by series.
+    """
+    by_cutoff: dict[str, ModelScorecard] = {c.fold_cutoff: c for c in champion_cards}
+    pairs: list[tuple[float, float]] = []
+    for cand_card in candidate_cards:
+        champ_card = by_cutoff.get(cand_card.fold_cutoff)
+        if champ_card is None:
+            # No matching fold on the champion side. Pair
+            # positionally with the next unused champion card.
+            # In practice this is rare because both sides were
+            # scored on the same canonical table.
+            for i in range(min(len(cand_card.forecast), len(champion_cards[i].forecast) if i < len(champion_cards) else 0)):
+                pairs.append((cand_card.forecast[i], champion_cards[i].forecast[i]))
+            continue
+        n = min(len(cand_card.forecast), len(champ_card.forecast))
+        for i in range(n):
+            pairs.append((cand_card.forecast[i], champ_card.forecast[i]))
+    return pairs
+
+
+def run_shadow_mode(
+    candidate: PromotionCandidate,
+    champion: Champion,
+    *,
+    tolerance: float = 0.05,
+) -> ShadowModeResult:
+    """Run shadow mode: pair the candidate's and champion's forecasts step-by-step.
+
+    Parameters
+    ----------
+    candidate
+        The candidate ``PromotionCandidate``. Its scorecards
+        are the "shadow" output (the candidate's forecasts
+        produced on the same canonical table as the champion's).
+    champion
+        The current production ``Champion``. Its scorecards
+        are the baseline.
+    tolerance
+        Relative agreement threshold. A pair is "in agreement"
+        when ``|cand - champ| / max(|champion|, eps) <= tolerance``.
+        Default 0.05 (5% relative disagreement is the cutoff).
+
+    Returns
+    -------
+    ShadowModeResult
+        The per-series pair list and the overall agreement
+        rate. Pure function: same inputs -> same result.
+    """
+    cand_by_series = _index_scorecards_by_series(candidate.scorecards)
+    champ_by_series = _index_scorecards_by_series(champion.scorecards)
+
+    per_series_pairs: dict[str, list[tuple[float, float]]] = {}
+    total_pairs = 0
+    agreeing_pairs = 0
+    # Iterate the union of series keys so a series present
+    # on only one side still appears in the output (with
+    # whatever pairs we can compute — none if the other side
+    # is missing, so it contributes zero to the agreement
+    # rate).
+    for series_key in sorted(set(cand_by_series) | set(champ_by_series)):
+        cand_cards = cand_by_series.get(series_key, [])
+        champ_cards = champ_by_series.get(series_key, [])
+        pairs = _pair_forecasts(cand_cards, champ_cards)
+        per_series_pairs[series_key] = pairs
+        total_pairs += len(pairs)
+        for cand_step, champ_step in pairs:
+            # Relative disagreement, with the eps branch to
+            # handle champion-forecast-equals-zero.
+            denom = max(abs(champ_step), _ZERO_EPS)
+            if abs(cand_step - champ_step) / denom <= tolerance:
+                agreeing_pairs += 1
+    agreement_rate = agreeing_pairs / total_pairs if total_pairs else 0.0
+    return ShadowModeResult(
+        candidate_family=candidate.model_family,
+        champion_family=champion.model_family,
+        tolerance=tolerance,
+        per_series_pairs=per_series_pairs,
+        agreement_rate=agreement_rate,
+    )
+
+
 __all__ = (
     "LeakageCheck",
     "PromotionCandidate",
     "Champion",
     "PromotionComparison",
     "PromotionOutcome",
+    "ShadowModeResult",
     "build_default_backtest_window",
     "check_window_leakage",
     "compare_candidate_to_champion",
+    "run_shadow_mode",
 )
