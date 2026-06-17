@@ -12,8 +12,10 @@ import math
 import pytest
 
 from forecasting.replenishment import (
+    ApprovalTier,
     InventoryState,
     ReplenishmentConfig,
+    classify_approval_tier,
     compute_lead_time_demand,
     compute_order_quantity,
     compute_reorder_point,
@@ -319,3 +321,73 @@ def test_order_quantity_full_chain_example() -> None:
         inventory=_inv(current=20.0, open_pos=10.0),
         config=cfg,
     ) == 30.0
+
+
+# ---------------------------------------------------------------------------
+# classify_approval_tier (CB3)
+# ---------------------------------------------------------------------------
+
+
+def test_zero_order_is_auto_tier() -> None:
+    cfg = ReplenishmentConfig()
+    assert classify_approval_tier(0.0, cfg) == "auto"
+
+
+def test_negative_order_is_auto_tier() -> None:
+    """Defensive: degenerate negative order -> auto (clamped at 0)."""
+    cfg = ReplenishmentConfig()
+    assert classify_approval_tier(-5.0, cfg) == "auto"
+
+
+def test_small_order_is_small_tier() -> None:
+    """An order strictly positive but at or below the small threshold -> small."""
+    cfg = ReplenishmentConfig(approval_threshold_small=100.0)
+    assert classify_approval_tier(50.0, cfg) == "small"
+
+
+def test_at_small_threshold_inclusive() -> None:
+    """An order exactly at the small threshold is still small (inclusive lower)."""
+    cfg = ReplenishmentConfig(approval_threshold_small=100.0)
+    assert classify_approval_tier(100.0, cfg) == "small"
+
+
+def test_above_small_but_below_large_is_medium_tier() -> None:
+    cfg = ReplenishmentConfig(
+        approval_threshold_small=100.0,
+        approval_threshold_large=10000.0,
+    )
+    assert classify_approval_tier(500.0, cfg) == "medium"
+
+
+def test_at_large_threshold_still_medium() -> None:
+    """An order exactly at the large threshold is still medium (inclusive upper)."""
+    cfg = ReplenishmentConfig(
+        approval_threshold_small=100.0,
+        approval_threshold_large=10000.0,
+    )
+    assert classify_approval_tier(10000.0, cfg) == "medium"
+
+
+def test_above_large_threshold_is_large_tier() -> None:
+    cfg = ReplenishmentConfig(
+        approval_threshold_small=100.0,
+        approval_threshold_large=10000.0,
+    )
+    assert classify_approval_tier(50000.0, cfg) == "large"
+
+
+def test_classify_is_deterministic() -> None:
+    """Same inputs -> same tier."""
+    cfg = ReplenishmentConfig(
+        approval_threshold_small=100.0,
+        approval_threshold_large=10000.0,
+    )
+    assert classify_approval_tier(500.0, cfg) == classify_approval_tier(500.0, cfg)
+
+
+def test_classify_returns_approval_tier_literal() -> None:
+    """The classifier returns one of the four closed-Literal values."""
+    cfg = ReplenishmentConfig()
+    valid: set[str] = {"auto", "small", "medium", "large"}
+    for q in [0.0, 1.0, 100.0, 500.0, 10000.0, 50000.0]:
+        assert classify_approval_tier(q, cfg) in valid

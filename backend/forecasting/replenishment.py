@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Literal
 
 
 # ---------------------------------------------------------------------------
@@ -240,11 +241,56 @@ def compute_order_quantity(
     return float(packed)
 
 
+# ---------------------------------------------------------------------------
+# CB3: approval tiers
+# ---------------------------------------------------------------------------
+
+ApprovalTier = Literal["auto", "small", "medium", "large"]
+
+
+def classify_approval_tier(
+    order_quantity: float,
+    config: ReplenishmentConfig,
+) -> ApprovalTier:
+    """Map an order quantity to an approval tier.
+
+    Boundaries (inclusive on the lower end, exclusive on the
+    upper end of each tier, except the top tier):
+
+    * ``order_quantity == 0`` -> ``"auto"``
+      (no order needed; the platform can skip the human
+      review path entirely).
+    * ``0 < order_quantity <= approval_threshold_small`` ->
+      ``"small"``. Inclusive lower: an order exactly at the
+      small threshold is still classified as small (the
+      classifier is monotonic).
+    * ``approval_threshold_small < order_quantity <=
+      approval_threshold_large`` -> ``"medium"``.
+    * ``order_quantity > approval_threshold_large`` ->
+      ``"large"``. No upper cap; the platform's approval
+      workflow handles arbitrarily large orders.
+
+    Negative ``order_quantity`` is treated as ``"auto"``
+    (degenerate case; same defensive surface as
+    ``compute_order_quantity`` returning 0 for negative
+    targets).
+    """
+    if order_quantity <= 0:
+        return "auto"
+    if order_quantity <= config.approval_threshold_small:
+        return "small"
+    if order_quantity <= config.approval_threshold_large:
+        return "medium"
+    return "large"
+
+
 __all__ = (
     "ReplenishmentConfig",
     "InventoryState",
+    "ApprovalTier",
     "compute_lead_time_demand",
     "compute_safety_stock",
     "compute_reorder_point",
     "compute_order_quantity",
+    "classify_approval_tier",
 )
