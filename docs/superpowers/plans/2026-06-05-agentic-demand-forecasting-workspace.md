@@ -163,7 +163,7 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - takes the post-baseline scorecards + residual decomp as input
   - returns a typed `Proposal[]` (uses the contracts from CB1) with `kind: "config" | "code"`, `action`, `target` (series or segment), `expected_delta`, `evidence` (Claim)
   - config proposals first, code proposals only if config round is exhausted without hitting target
-- [ ] Add the config-escalation loop in `foundry_modelling`:
+- [x] Add the config-escalation loop in `foundry_modelling` (CB5, completed 2026-06-17):
   - iterate `Proposal[]`, apply one config proposal at a time
   - keep/kill on marginal MASE gain (threshold from `.env`, default 0.02)
   - per-knob-type attempt cap (default 3 per Run)
