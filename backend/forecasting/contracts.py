@@ -179,6 +179,109 @@ class FeatureFlags(BaseModel):
     use_intermittency_features: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Foundry escalation contracts
+# ---------------------------------------------------------------------------
+# The Phase 4.1 two-path escalation loop (config vs code) needs a typed
+# output the Foundry agent produces and the harness consumes. The LLM
+# call returns ``Proposal[]``; the harness iterates the list, tries
+# config proposals first, and only escalates to code proposals when
+# config escalation is exhausted without hitting the MASE target.
+#
+# The contract separates the *kind* of action (config vs code) from
+# the *specific* action (which flag, which model, which family) and
+# from the *target* (one series or a whole segment). Splitting them
+# into Literal fields rather than a single free-text ``action`` string
+# keeps every proposal machine-validatable: a config proposal that
+# names a non-existent FeatureFlag is rejected at the model boundary
+# (Pydantic Literal validation), not at execution time.
+
+ProposalKind = Literal["config", "code"]
+
+# A config proposal flips a knob that already exists. The Literal is
+# the closed set of knobs the harness currently understands; new ones
+# land here when the harness grows, not in the LLM prompt. ``model``
+# is the model-family swap (one of the 6 governed families) and the
+# rest are FeatureFlag toggles / parameter tweaks.
+ConfigAction = Literal[
+    "enable_lag_features",
+    "enable_promo_indicator",
+    "enable_stockout_features",
+    "enable_hierarchy_features",
+    "enable_lifecycle_features",
+    "enable_intermittency_features",
+    "increase_fourier_terms",
+    "swap_model_family",
+    "tune_model_parameter",
+]
+
+# A code proposal adds a new building block. Today the only two
+# shapes the plan allows are a new feature family or a new model
+# family; if a third ever lands (a new adapter, a new preflight
+# probe), it joins this Literal.
+CodeAction = Literal["new_feature_family", "new_model_family"]
+
+
+class ProposalTarget(BaseModel):
+    """The scope a single proposal applies to.
+
+    Exactly one of ``series_key`` or ``segment_id`` is set. A
+    series-level proposal is one-off (e.g. "this one stockout-heavy
+    series needs the stockout family"); a segment-level proposal
+    applies to every series in the segment (e.g. "all INTERMITTENT
+    series in G1 would benefit from intermittency features").
+
+    The harness's Proposal application logic branches on which field
+    is set; the ``scope`` Literal is a redundant but explicit hint
+    for downstream rendering and audit.
+    """
+
+    scope: Literal["series", "segment"]
+    series_key: str | None = None
+    segment_id: str | None = None
+
+
+class Proposal(BaseModel):
+    """A single candidate change the Foundry agent proposes.
+
+    Output of the ``propose_feature_changes`` tool (CB3 of Phase 4.1);
+    consumed by the config-escalation loop (CB5) and the code-escalation
+    gate (the existing ``model_escalation`` path for ``code`` proposals).
+
+    ``expected_delta`` is the agent's prediction of the MASE improvement
+    the proposal would produce, used by the harness only as a *hint* for
+    ranking; the keep/kill decision is made on the *actual* MASE delta
+    measured after application. Proposals with no predicted delta are
+    accepted (the harness ranks them last), but the LLM is prompted to
+    always provide one.
+
+    ``evidence`` is the Claim the agent is making for the proposal
+    (typically ``evidence_type=pattern`` grounded in the residual
+    decomposition). On success the Claim is verifier-promoted to a
+    markdown card in ``LEARNINGS.md`` per the Phase 1 promotion rule.
+    """
+
+    kind: ProposalKind
+    # For config proposals, ``config_action`` is set; for code proposals,
+    # ``code_action`` is set. Using a discriminated union would be more
+    # strictly typed but the current shape keeps ``kind`` and the
+    # action fields in one record, which matches how the LLM emits
+    # proposals (one row per candidate, not a tagged union).
+    config_action: ConfigAction | None = None
+    code_action: CodeAction | None = None
+    # Free-text parameter payload for ``tune_model_parameter`` and the
+    # code-proposal cases. For ``tune_model_parameter`` it is
+    # ``{"parameter": "n_estimators", "value": 200}``; for code
+    # proposals it is a markdown-card-ready description of the new
+    # family. The harness validates against the action's schema before
+    # applying — wrong-shape payloads are dropped, not applied blind.
+    action_payload: dict = Field(default_factory=dict)
+    target: ProposalTarget
+    expected_delta: float = 0.0
+    rationale: str
+    evidence: Claim
+
+
 # DomainContextPack is defined after Claim / Risk below - it embeds them.
 
 
