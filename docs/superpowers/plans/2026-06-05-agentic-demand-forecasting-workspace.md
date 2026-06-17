@@ -222,29 +222,19 @@ The platform's own native layer for: (1) raising approval requests to a human an
 
 ### Phase 7: Monitoring And Augmented MLOps
 
-- [ ] Monitor data drift:
-  - schema changes
-  - missing feeds
-  - distribution shifts
-  - new SKUs or locations
-- [ ] Monitor model drift:
-  - forecast error
-  - bias
-  - interval calibration
-  - segment degradation
-- [ ] Monitor business outcomes:
-  - stockouts
-  - overstock
-  - service level
-  - planner overrides
-  - approval/rejection patterns
-- [ ] Generate recurring artifacts:
-  - `MONITORING_REPORT.md`
-  - `DRIFT_REPORT.md`
-  - `OVERRIDE_ANALYSIS.md`
-  - `MODEL_HEALTH.md`
+The platform's own native layer for: (1) detecting data and model drift on a recurring basis, (2) translating drift signals into business-outcome deltas, and (3) emitting the four recurring markdown artifacts the cockpit surfaces under the MLOps Monitor tab. The cockpit UI is the surface the planner interacts with; the in-process monitoring engine and report writers are the engine. The boundary is deliberately kept behind small seams (`MonitorSnapshot`, the report-writer helpers) so a future external drift system (Evidently AI, Arize, a custom monitor service) can plug in behind the same contracts without changing the rest of the platform.
 
-> ❌ **Phase 7 not started.**
+**What this repo ships (Phase 7 in-repo):**
+
+- [ ] CB1 — rewrite the Phase 7 section in this plan to make the in-repo / out-of-repo split explicit.
+- [ ] CB2 — typed contracts in `contracts.py` for the monitoring boundary: `DataDriftReport`, `ModelDriftReport`, `BusinessOutcomesReport`, `MonitorSnapshot`. Pure Pydantic, no I/O.
+- [ ] CB3 — `data_drift` module: `detect_data_drift(previous, current)` comparing the previous and current `PreflightBundle` / canonical data shape; surfaces schema changes, missing feeds, distribution shifts, and new SKU/location keys.
+- [ ] CB4 — `model_drift` module: `detect_model_drift(previous_scorecards, current_scorecards, segment_map)` comparing forecast error, bias, and segment-level MASE; interval calibration wired but returns `None` (same seam pattern as `interval_coverage` in `metrics.py`).
+- [ ] CB5 — `business_outcomes` module: `summarise_business_outcomes(recommendations, decisions, overrides)` rolling up stockouts, overstock, service level, planner overrides, and approval/rejection patterns from the in-process approval audit log.
+- [ ] CB6 — markdown report writers: `write_monitoring_report`, `write_drift_report`, `write_override_analysis`, `write_model_health` emit the four recurring artifacts to `outputs/{run_id}/`; the .gitignore stays the same (these are generated, the workspace markdown is the source of truth).
+- [ ] CB7 — full-chain monitoring integration test, tick Phase 7 plan, mark complete, add glossary terms (`Drift Report`, `Model Health`, `Monitor Snapshot`).
+
+**Future external integrations:** an alternative drift-detection backend (Evidently AI, Arize Phoenix, a custom data-quality service) can plug in behind the same `MonitorSnapshot` contract without changing the rest of the platform. The cockpit UI and the four markdown artifacts stay unchanged. Today's deployment uses the in-process implementations; the seam exists for the day the team chooses to add a real external integration, not because one is planned.
 
 ### Phase 8: Data Intelligence Cockpit
 
