@@ -4,7 +4,7 @@ HTTP-layer models live in api/models.py - not here.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -812,6 +812,40 @@ class RobustnessCheck(BaseModel):
     check: Literal["data_contract", "backtest", "robustness", "review"]
     passed: bool
     detail: str
+
+
+# ---------------------------------------------------------------------------
+# Measure-MASE seam
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class MeasureMASE(Protocol):
+    """The interface the loop needs to measure post-application MASE.
+
+    Production wraps ``build_feature_table`` + ``run_forecast_harness``;
+    tests pass a stub returning a per-proposal MASE. The protocol
+    is intentionally narrow: one method, one input (the applied
+    config), one output (a MASE value).
+
+    Lives in :mod:`forecasting.contracts` (the canonical type
+    home) so the seam is importable from anywhere a MASE-measurer
+    is needed - not just from the config-escalation loop that
+    happens to be the first consumer. The config-escalation
+    module re-exports it for one session of source compat.
+
+    ``@runtime_checkable`` lets test code assert "this object walks
+    like a MeasureMASE" via ``isinstance`` without subclassing.
+    Production code should still treat it as a structural type -
+    the runtime check is a test-time convenience, not a contract
+    gate.
+    """
+
+    def __call__(
+        self,
+        flags: FeatureFlags,
+        model_family: ModelFamilyName,
+    ) -> float: ...
 
 
 # The harness's unified request shape. ``fold_cutoffs`` is shared with

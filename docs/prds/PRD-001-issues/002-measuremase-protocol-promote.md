@@ -19,15 +19,15 @@ This issue:
 
 ## Acceptance criteria
 
-- [ ] `MeasureMASE` Protocol is importable from `forecasting.contracts`
-- [ ] `MeasureMASE` is still importable from `forecasting.config_escalation` (re-export preserved)
-- [ ] `default_measure_mase` (the production adapter) remains in `config_escalation.py` and is unchanged in behaviour
-- [ ] `tests/stubs.py` exists and exports `StubMeasureMASE` with a documented constructor (`StubMeasureMASE(value: float)` for a constant; optional `StubMeasureMASE(values: list[float])` for iteration across calls)
-- [ ] `StubMeasureMASE` satisfies the `MeasureMASE` Protocol (a structural-typing test asserts this)
-- [ ] All existing tests that use a stub measurer are updated to import `StubMeasureMASE` from `tests/stubs.py` (no inline lambdas or anonymous classes remain in test files for this purpose)
-- [ ] `uv run pytest -q` is green; full suite remains at 646 passing + ~5 new stub tests = ~651
-- [ ] One commit on `main` with message `feat: refactor cb2 - promote MeasureMASE to contracts + add StubMeasureMASE adapter`
-- [ ] Commit is pushed
+- [x] `MeasureMASE` Protocol is importable from `forecasting.contracts`
+- [x] `MeasureMASE` is still importable from `forecasting.config_escalation` (re-export preserved)
+- [x] `default_measure_mase` (the production adapter) remains in `config_escalation.py` and is unchanged in behaviour
+- [x] `tests/stubs.py` exists and exports `StubMeasureMASE` with a documented constructor (`StubMeasureMASE(value: float)` for a constant; optional `StubMeasureMASE(values: list[float])` for iteration across calls)
+- [x] `StubMeasureMASE` satisfies the `MeasureMASE` Protocol (a structural-typing test asserts this)
+- [x] All existing tests that use a stub measurer are updated to import `StubMeasureMASE` from `tests/stubs.py` (no inline lambdas or anonymous classes remain in test files for this purpose)
+- [x] `uv run pytest -q` is green; full suite remains at 646 passing + ~5 new stub tests = ~651
+- [x] One commit on `main` with message `feat: refactor cb2 - promote MeasureMASE to contracts + add StubMeasureMASE adapter`
+- [x] Commit is pushed
 
 ## Blocked by
 

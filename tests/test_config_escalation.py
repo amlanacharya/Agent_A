@@ -30,6 +30,7 @@ from forecasting.contracts import (
     ProposalTarget,
 )
 from forecasting.marginal_gain import MarginalGainConfig
+from tests.stubs import StubMeasureMASE
 
 
 # ---------------------------------------------------------------------------
@@ -82,26 +83,6 @@ def _config_proposal(
         rationale=f"enable {action}",
         evidence=_claim(series_key),
     )
-
-
-def _stub_measure(mase_sequence: list[float]):
-    """Build a stub MeasureMASE that pops MASE values off a sequence.
-
-    Each call returns the next MASE in the sequence. If the
-    sequence is exhausted, returns the last value. The test
-    author controls the loop's measurement outcomes by setting
-    the sequence length and values.
-    """
-    seq = list(mase_sequence)
-    state = {"calls": 0}
-
-    def _measure(flags: FeatureFlags, family: ModelFamilyName) -> float:
-        idx = min(state["calls"], len(seq) - 1)
-        state["calls"] += 1
-        return seq[idx]
-
-    _measure.calls = lambda: state["calls"]  # type: ignore[attr-defined]
-    return _measure
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +182,7 @@ def test_loop_returns_no_config_proposals_when_input_empty() -> None:
         starting_flags=_flags(),
         starting_model_family="naive",
         starting_mase=1.5,
-        measure_mase=_stub_measure([]),
+        measure_mase=StubMeasureMASE(value=0.0),
         config=MarginalGainConfig(),
     )
     assert report.stopped_reason == "no_config_proposals"
@@ -224,7 +205,7 @@ def test_loop_filters_out_code_proposals() -> None:
         starting_flags=_flags(),
         starting_model_family="naive",
         starting_mase=1.5,
-        measure_mase=_stub_measure([]),
+        measure_mase=StubMeasureMASE(value=0.0),
         config=MarginalGainConfig(),
     )
     assert report.stopped_reason == "no_config_proposals"
@@ -244,7 +225,7 @@ def test_loop_keeps_improving_proposal() -> None:
         _config_proposal("enable_promo_indicator"),
         _config_proposal("enable_stockout_features"),
     ]
-    measure = _stub_measure([1.3, 1.25])
+    measure = StubMeasureMASE(values=[1.3, 1.25])
     report = run_config_escalation(
         run_id="r1",
         proposals=proposals,
@@ -287,7 +268,7 @@ def test_loop_reverts_non_improving_proposal() -> None:
         _config_proposal("enable_stockout_features"),
         _config_proposal("enable_hierarchy_features"),
     ]
-    measure = _stub_measure([1.495, 1.494, 1.493])
+    measure = StubMeasureMASE(values=[1.495, 1.494, 1.493])
     report = run_config_escalation(
         run_id="r1",
         proposals=proposals,
@@ -326,7 +307,7 @@ def test_loop_stops_on_target_met() -> None:
         _config_proposal("enable_stockout_features"),
     ]
     # First proposal hits target (1.5 -> 0.95, target = 1.0).
-    measure = _stub_measure([0.95])
+    measure = StubMeasureMASE(values=[0.95])
     report = run_config_escalation(
         run_id="r1",
         proposals=proposals,
@@ -355,7 +336,7 @@ def test_loop_stops_on_marginal_gain_floor() -> None:
     # patience=2, so after the 2nd non-improvement (1.494), the
     # 3rd attempt would push us past patience and stop. The
     # 3rd proposal is the one that triggers the floor.
-    measure = _stub_measure([1.495, 1.494, 1.493])
+    measure = StubMeasureMASE(values=[1.495, 1.494, 1.493])
     report = run_config_escalation(
         run_id="r1",
         proposals=proposals,
@@ -379,7 +360,7 @@ def test_loop_stops_when_proposals_exhausted() -> None:
     proposals = [
         _config_proposal("enable_promo_indicator"),
     ]
-    measure = _stub_measure([1.30])  # one improvement, kept
+    measure = StubMeasureMASE(values=[1.30])  # one improvement, kept
     report = run_config_escalation(
         run_id="r1",
         proposals=proposals,
@@ -409,7 +390,7 @@ def test_loop_respects_per_knob_cap() -> None:
     ]
     # MASE values: each proposal improves by 0.10 (kept), but
     # the 4th hits the cap and is dropped without measurement.
-    measure = _stub_measure([1.40, 1.30, 1.20, 0.0])  # 4th value unused
+    measure = StubMeasureMASE(values=[1.40, 1.30, 1.20, 0.0])  # 4th value unused
     report = run_config_escalation(
         run_id="r1",
         proposals=proposals,
@@ -428,7 +409,7 @@ def test_loop_respects_per_knob_cap() -> None:
     assert report.stopped_reason == "knob_cap"
     # The 4th proposal was not measured — the stub's calls
     # counter should be 3.
-    assert measure.calls() == 3
+    assert measure.calls == 3
 
 
 def test_loop_knob_caps_are_per_action_kind() -> None:
@@ -441,7 +422,7 @@ def test_loop_knob_caps_are_per_action_kind() -> None:
         _config_proposal("enable_stockout_features"),
     ]
     # 3 promo + 2 stockout. Each kind has its own cap of 3.
-    measure = _stub_measure([1.40, 1.30, 1.20, 1.10, 1.05])
+    measure = StubMeasureMASE(values=[1.40, 1.30, 1.20, 1.10, 1.05])
     report = run_config_escalation(
         run_id="r1",
         proposals=proposals,
@@ -464,7 +445,7 @@ def test_loop_custom_knob_caps() -> None:
         _config_proposal("enable_promo_indicator"),
         _config_proposal("enable_promo_indicator"),
     ]
-    measure = _stub_measure([1.40, 1.30])
+    measure = StubMeasureMASE(values=[1.40, 1.30])
     report = run_config_escalation(
         run_id="r1",
         proposals=proposals,
@@ -496,7 +477,7 @@ def test_loop_records_application_error_and_continues() -> None:
         # A normal proposal after -> still tried
         _config_proposal("enable_promo_indicator"),
     ]
-    measure = _stub_measure([1.30])
+    measure = StubMeasureMASE(values=[1.30])
     report = run_config_escalation(
         run_id="r1",
         proposals=proposals,

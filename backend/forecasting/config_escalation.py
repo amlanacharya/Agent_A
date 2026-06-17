@@ -44,12 +44,13 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Literal
 
 from forecasting.contracts import (
     ConfigAction,
     FeatureFlags,
     ForecastRequest,
+    MeasureMASE,
     ModelFamilyName,
     ModelScorecard,
     Proposal,
@@ -76,22 +77,12 @@ StopReason = Literal[
 # ---------------------------------------------------------------------------
 # Measure-MASE seam
 # ---------------------------------------------------------------------------
-
-
-class MeasureMASE(Protocol):
-    """The interface the loop needs to measure post-application MASE.
-
-    Production wraps ``build_feature_table`` + ``run_forecast_harness``;
-    tests pass a stub returning a per-proposal MASE. The protocol
-    is intentionally narrow: one method, one input (the applied
-    config), one output (a MASE value).
-    """
-
-    def __call__(
-        self,
-        flags: FeatureFlags,
-        model_family: ModelFamilyName,
-    ) -> float: ...
+#
+# ``MeasureMASE`` is imported from :mod:`forecasting.contracts`
+# (the canonical type home) and re-exported below in ``__all__``
+# for one session of source compat. The production adapter
+# (``default_measure_mase``) and the stub adapter live with the
+# code that uses them - the Protocol itself lives in ``contracts``.
 
 
 def default_measure_mase(
