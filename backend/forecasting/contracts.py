@@ -231,14 +231,129 @@ class ProposalTarget(BaseModel):
     applies to every series in the segment (e.g. "all INTERMITTENT
     series in G1 would benefit from intermittency features").
 
-    The harness's Proposal application logic branches on which field
-    is set; the ``scope`` Literal is a redundant but explicit hint
-    for downstream rendering and audit.
+    # The harness's Proposal application logic branches on which field
+    # is set; the ``scope`` Literal is a redundant but explicit hint
+    # for downstream rendering and audit.
     """
 
     scope: Literal["series", "segment"]
     series_key: str | None = None
     segment_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Residual decomposition (Phase 4.1 CB2)
+# ---------------------------------------------------------------------------
+# The decompose_residuals tool reads a ModelScorecard's forecast/actual
+# arrays, computes per-series residual statistics, and emits a closed
+# set of ``ResidualPattern``s the propose_feature_changes tool ranks
+# against in CB3. The pattern set is closed and named: a free-text
+# residual narrative would force the LLM to do structured extraction
+# at proposal time, which is the wrong place for that work.
+#
+# Each pattern carries a ``severity`` in [0, 1] so the proposal tool
+# can rank (config_proposal_evidence = max severity of matched
+# patterns) without re-reading the residual stats. The patterns are
+# the *interface* between the deterministic math (CB2) and the LLM
+# judgement (CB3) — keeping the seam here means CB2 has no LLM
+# dependency and CB3 has no math dependency.
+
+ResidualPattern = Literal[
+    # Forecast systematically over- or under-shoots actuals. The
+    # severity is the absolute mean residual normalised by the mean
+    # actual demand. A bias of 0.5 means the forecast is off by ~50%
+    # of the mean demand level on average.
+    "BIASED_RESIDUAL",
+    # Lag-k autocorrelation of the residual is high for some k in
+    # {1, 2, 4, 8}. Implies the model has missed a temporal
+    # structure the existing features don't capture. Severity is the
+    # max absolute autocorrelation across the lags.
+    "AUTOCORRELATED_RESIDUAL",
+    # Mean residual on promo-flagged weeks is materially different
+    # from mean residual on non-promo weeks. Implies the model
+    # under-models the promo lift. Severity is the absolute
+    # difference in mean residuals divided by overall residual std.
+    "PROMO_RESIDUAL_SPIKE",
+    # Same as PROMO but for stockout-flagged weeks. Distinguishes
+    # "model missed a stockout-week correction" from
+    # "model missed a promo-week correction" — the two are
+    # orthogonal and the proposal tool ranks them separately.
+    "STOCKOUT_RESIDUAL_SPIKE",
+    # Mean residual on this series is materially different from
+    # the mean residual of the parent (sku_id aggregated across
+    # location_id). Implies the child has a location-specific
+    # effect the hierarchy features don't capture. Severity is the
+    # absolute difference in mean residuals divided by overall
+    # residual std.
+    "PARENT_CHILD_RESIDUAL_GAP",
+    # Residual variance is much higher than what the in-sample
+    # naive MAE would predict. Implies a regime change or a
+    # non-stationary driver the features don't track.
+    "HETEROSCEDASTIC_RESIDUAL",
+]
+
+
+class ResidualStats(BaseModel):
+    """The deterministic per-series residual statistics.
+
+    All fields are pure functions of the scorecard's forecast and
+    actual arrays, except ``promo_residual_mean`` /
+    ``stockout_residual_mean`` / ``parent_residual_mean`` which
+    require the canonical demand slice for the fold horizon and the
+    parent-grain residual mean respectively. The pure math (mean,
+    std, autocorr, bias) is always populated; the contextual fields
+    are populated only when the caller provides the context.
+    """
+
+    series_key: str
+    n: int
+    # Pure residual stats
+    residual_mean: float
+    residual_std: float
+    mae: float
+    # Autocorrelation at standard lags. None when n is too short to
+    # compute a given lag (lag must be < n).
+    autocorr_lag_1: float | None = None
+    autocorr_lag_2: float | None = None
+    autocorr_lag_4: float | None = None
+    autocorr_lag_8: float | None = None
+    # Contextual residual means, populated when context is provided
+    promo_residual_mean: float | None = None
+    non_promo_residual_mean: float | None = None
+    stockout_residual_mean: float | None = None
+    non_stockout_residual_mean: float | None = None
+    parent_residual_mean: float | None = None
+
+
+class ResidualPatternHit(BaseModel):
+    """One (pattern, severity) pair emitted by the decomposition.
+
+    The decomposition never returns a free-text narrative; it
+    returns a list of hits, one per pattern the residual stats
+    cross the threshold for. The proposal tool consumes the hits
+    list and ranks ``Proposal`` candidates by max hit severity.
+    """
+
+    pattern: ResidualPattern
+    severity: float  # in [0, 1]
+    detail: str  # short human-readable explanation for the audit log
+
+
+class ResidualDecomposition(BaseModel):
+    """The deterministic output of ``decompose_residuals`` for one series.
+
+    One ``ResidualDecomposition`` per (series, fold) pair. The
+    Foundry agent aggregates across folds when ranking proposals at
+    the segment level (CB3) — see ``propose_feature_changes``.
+
+    ``patterns`` is empty when the residual is well-explained by the
+    model's features and the proposal tool has nothing to recommend.
+    """
+
+    series_key: str
+    fold_cutoff: str  # ISO date string, matches ModelScorecard.fold_cutoff
+    stats: ResidualStats
+    patterns: list[ResidualPatternHit] = Field(default_factory=list)
 
 
 class Proposal(BaseModel):

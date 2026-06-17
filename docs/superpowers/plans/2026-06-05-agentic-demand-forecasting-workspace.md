@@ -158,7 +158,7 @@ The Phase 4 self-correction loop (model-class changes within a family) is **not*
 Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
 
 - [x] Add the `Proposal` / `ProposalKind` / `ConfigAction` / `CodeAction` / `ProposalTarget` Pydantic contracts to `contracts.py` — the typed shape every later piece consumes (CB1, completed 2026-06-17).
-- [ ] Add the `decompose_residuals` tool — backs the proposal with evidence (`Claim` with `evidence_type=pattern`).
+- [x] Add the `decompose_residuals` tool — backs the proposal with evidence (`Claim` with `evidence_type=pattern`) (CB2, completed 2026-06-17).
 - [ ] Add the `propose_feature_changes` tool to the Foundry agent:
   - takes the post-baseline scorecards + residual decomp as input
   - returns a typed `Proposal[]` (uses the contracts from CB1) with `kind: "config" | "code"`, `action`, `target` (series or segment), `expected_delta`, `evidence` (Claim)
