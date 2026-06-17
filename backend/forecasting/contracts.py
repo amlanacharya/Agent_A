@@ -696,6 +696,48 @@ class FoundryReport(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Promotion (Phase 5.2 CB1)
+# ---------------------------------------------------------------------------
+# Champion/challenger promotion: a candidate model is run on a
+# fixed ``BacktestWindow`` (the same cutoffs for every candidate,
+# so the comparison is fair) and compared against the current
+# champion on WAPE / per-segment WAPE / shadow-mode agreement.
+# The comparison is pure: the candidate's scorecards and the
+# champion's scorecards are inputs; the function returns a typed
+# ``PromotionComparison`` record. The actual decision (promote
+# or reject) is a separate function (CB2).
+#
+# Why a fixed window instead of a rolling one: the platform
+# already does walk-forward validation per fold inside the
+# harness. The promotion layer's role is *comparison*, not
+# validation — the candidate and the champion must be scored
+# on the *same* cutoffs so the WAPE delta is not contaminated
+# by data drift between runs.
+
+
+class BacktestWindow(BaseModel):
+    """The fixed backtest window the promotion comparison uses.
+
+    All candidates and the current champion are scored against
+    these exact cutoffs. The window is a closed interval
+    ``[start, end]`` with a list of cutoffs inside it; each
+    cutoff is a fold-start that the harness will backtest
+    from.
+
+    ``start`` and ``end`` are ISO-8601 timestamps. ``cutoffs``
+    are ISO-8601 timestamps strictly between ``start`` and
+    ``end``. ``horizon`` is the forecast horizon (in the same
+    time unit as the timestamps — days, weeks, etc., depending
+    on the dataset).
+    """
+
+    start: str
+    end: str
+    cutoffs: list[str]
+    horizon: int
+
+
+# ---------------------------------------------------------------------------
 # Prism (what-if) contracts
 # ---------------------------------------------------------------------------
 

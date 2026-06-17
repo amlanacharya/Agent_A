@@ -186,7 +186,7 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - segment-level error (per-segment rollup — wired in CB1b)
   - interval coverage (80% PI; stub returns None until scorecard grows interval fields)
   - stockout and overstock impact (mean gap per step)
-- [ ] Build champion/challenger promotion:
+- [x] Build champion/challenger promotion (CB1 done 2026-06-17: BacktestWindow contract + builder + leakage check; CB2-CB4 pending):
   - fixed backtest windows
   - leakage checks
   - segment scorecards
