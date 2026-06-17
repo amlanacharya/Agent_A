@@ -38,7 +38,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Literal
 
-from forecasting.contracts import BacktestWindow
+from pydantic import BaseModel
+
+from forecasting.contracts import (
+    BacktestWindow,
+    ModelFamilyName,
+    ModelScorecard,
+)
+from forecasting.metrics import wape
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +188,214 @@ def check_window_leakage(
     return "clean"
 
 
+# ---------------------------------------------------------------------------
+# Promotion candidate / champion / comparison (Phase 5.2 CB2)
+# ---------------------------------------------------------------------------
+# CB2 ships the actual side-by-side scoring. CB1 set the window
+# spec; CB2 takes two sets of scorecards (candidate's and
+# champion's) and returns a typed ``PromotionComparison`` record.
+#
+# Why the segment_map is a kwarg and not on the scorecard:
+# ``ModelScorecard`` is a per-(model, series, fold) record. The
+# segment_id is a (run-level) lookup, not a per-scorecard field,
+# because the same scorecard can belong to different segments
+# depending on which run produced it. Passing the map at the
+# call site keeps the scorecard type stable and the comparison
+# function pure.
+
+
+PromotionOutcome = Literal["promote", "reject", "leakage_failed", "human_required"]
+
+
+class PromotionCandidate(BaseModel):
+    """A model proposed for promotion to champion.
+
+    Carries the scorecards the candidate produced on the
+    ``BacktestWindow``, plus metadata for the audit log.
+    ``reason`` is a free-text explanation of why this
+    candidate was generated (e.g. "from CB3 propose_feature_changes").
+    """
+
+    run_id: str
+    model_family: ModelFamilyName
+    scorecards: list[ModelScorecard]
+    reason: str
+
+
+class Champion(BaseModel):
+    """The current production model. Carries its scorecards on the same window."""
+
+    model_family: ModelFamilyName
+    scorecards: list[ModelScorecard]
+    promoted_at: datetime
+
+
+class PromotionComparison(BaseModel):
+    """The outcome of one candidate vs champion comparison.
+
+    ``promotion_outcome`` is the closed Literal decision:
+    ``promote`` when the candidate improves WAPE past
+    ``min_improvement`` and does not regress any segment,
+    ``reject`` otherwise, ``leakage_failed`` when the
+    ``BacktestWindow`` itself fails the leakage check,
+    ``human_required`` when the comparison cannot be decided
+    by metrics alone (reserved for future use).
+    """
+
+    candidate_wape: float
+    champion_wape: float
+    wape_delta: float  # negative = candidate better
+    segments_compared: list[str]
+    segments_improved: list[str]
+    segments_regressed: list[str]
+    promotion_outcome: PromotionOutcome
+
+
+def _scorecards_in_window(
+    scorecards: list[ModelScorecard],
+    window: BacktestWindow,
+) -> list[ModelScorecard]:
+    """Filter a scorecard list to those whose fold_cutoff is in the window.
+
+    The comparison must use exactly the same cutoffs for
+    candidate and champion, so anything outside the window is
+    silently dropped. Returns an empty list when no scorecard
+    matches (a degenerate case the caller must surface).
+    """
+    in_window = set(window.cutoffs)
+    return [s for s in scorecards if s.fold_cutoff in in_window]
+
+
+def _per_segment_wape(
+    scorecards: list[ModelScorecard],
+    segment_map: dict[str, str],
+) -> dict[str, float]:
+    """WAPE per segment, keyed by segment_id.
+
+    Returns ``{}`` for a scorecard whose series_key is not in
+    the segment map. The caller decides whether that is a
+    silent skip or a hard error (today: silent skip, with
+    the unsegmented series excluded from the per-segment
+    rollup).
+    """
+    grouped: dict[str, list[ModelScorecard]] = {}
+    for card in scorecards:
+        segment_id = segment_map.get(card.series_key)
+        if segment_id is None:
+            continue
+        grouped.setdefault(segment_id, []).append(card)
+    return {seg: wape(cards) for seg, cards in grouped.items()}
+
+
+def compare_candidate_to_champion(
+    candidate: PromotionCandidate,
+    champion: Champion,
+    *,
+    window: BacktestWindow,
+    canonical_table_end: str,
+    segment_map: dict[str, str],
+    min_improvement: float = 0.0,
+) -> PromotionComparison:
+    """Compare a candidate to the champion on the fixed ``BacktestWindow``.
+
+    Steps:
+
+    1. Run the leakage check. A non-clean outcome short-circuits
+       to a ``leakage_failed`` comparison (no WAPE delta).
+    2. Filter both scorecard lists to the window's cutoffs.
+    3. Compute WAPE for the candidate and the champion
+       (Phase 5.1's ``wape``).
+    4. Compute per-segment WAPE for both, then per-segment
+       delta. ``segments_improved`` are the segments where the
+       candidate's WAPE dropped; ``segments_regressed`` are
+       the segments where it rose.
+    5. Decide the outcome: ``promote`` when ``wape_delta <=
+       -min_improvement`` AND no segment regressed. Otherwise
+       ``reject``. ``human_required`` is reserved for cases
+       where the platform defers the call to a human reviewer
+       (today: not emitted; future Phase 6 hook).
+
+    The ``min_improvement`` default is 0 (a tie goes to the
+    champion — no change). A positive value (e.g. 0.01) means
+    "the candidate must improve WAPE by at least 1% absolute
+    to be promoted", a safety floor the platform can tune
+    via ``PROMOTION_MIN_IMPROVEMENT`` in ``.env``.
+    """
+    leakage = check_window_leakage(
+        window, canonical_table_end=canonical_table_end
+    )
+    if leakage != "clean":
+        # The leakage check failed. Surface the outcome with no
+        # numeric comparison — the candidate is rejected before
+        # any WAPE delta is computed.
+        return PromotionComparison(
+            candidate_wape=float("nan"),
+            champion_wape=float("nan"),
+            wape_delta=float("nan"),
+            segments_compared=[],
+            segments_improved=[],
+            segments_regressed=[],
+            promotion_outcome="leakage_failed",
+        )
+
+    candidate_cards = _scorecards_in_window(candidate.scorecards, window)
+    champion_cards = _scorecards_in_window(champion.scorecards, window)
+    candidate_wape = wape(candidate_cards)
+    champion_wape = wape(champion_cards)
+    # wape_delta is positive when the candidate is worse (its
+    # WAPE is higher than the champion's). A negative delta
+    # means the candidate is better.
+    wape_delta = candidate_wape - champion_wape
+
+    candidate_segments = _per_segment_wape(candidate_cards, segment_map)
+    champion_segments = _per_segment_wape(champion_cards, segment_map)
+    segments_compared = sorted(set(candidate_segments) | set(champion_segments))
+    segments_improved: list[str] = []
+    segments_regressed: list[str] = []
+    for seg in segments_compared:
+        cand_seg = candidate_segments.get(seg, float("nan"))
+        champ_seg = champion_segments.get(seg, float("nan"))
+        # NaN-safe comparison: a NaN segment is treated as
+        # neither improved nor regressed (the segment is
+        # missing data on one side).
+        if cand_seg != cand_seg or champ_seg != champ_seg:
+            continue
+        if cand_seg < champ_seg:
+            segments_improved.append(seg)
+        elif cand_seg > champ_seg:
+            segments_regressed.append(seg)
+
+    # Promote when the overall WAPE improved past the
+    # threshold AND no segment regressed. A regressed segment
+    # is a hard fail — the candidate might be better on
+    # average but worse on the segments that matter.
+    #
+    # Strict ``<`` (not ``<=``): a tie (wape_delta == 0) does not
+    # promote. With min_improvement=0, the rule reduces to
+    # "promote only on strict WAPE improvement"; a candidate
+    # that matches the champion's WAPE exactly does not displace
+    # the champion. This is the docstring's "tie goes to the
+    # champion -- no change" semantic.
+    promoted = wape_delta < -min_improvement and not segments_regressed
+    outcome: PromotionOutcome = "promote" if promoted else "reject"
+    return PromotionComparison(
+        candidate_wape=candidate_wape,
+        champion_wape=champion_wape,
+        wape_delta=wape_delta,
+        segments_compared=segments_compared,
+        segments_improved=segments_improved,
+        segments_regressed=segments_regressed,
+        promotion_outcome=outcome,
+    )
+
+
 __all__ = (
     "LeakageCheck",
+    "PromotionCandidate",
+    "Champion",
+    "PromotionComparison",
+    "PromotionOutcome",
     "build_default_backtest_window",
     "check_window_leakage",
+    "compare_candidate_to_champion",
 )
