@@ -179,13 +179,13 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
 
 ### Phase 5: Evaluation, Promotion, And Replenishment Policy
 
-- [ ] Define metric portfolio:
-  - WAPE
-  - bias
-  - horizon-level error
-  - segment-level error
-  - interval coverage
-  - stockout and overstock impact
+- [x] Define metric portfolio (CB1, completed 2026-06-17):
+  - WAPE (sum |actual-forecast| / sum |actual|)
+  - bias (signed; positive = under-forecast)
+  - horizon-level error (per-step MAE rollup)
+  - segment-level error (per-segment rollup — wired in CB1b)
+  - interval coverage (80% PI; stub returns None until scorecard grows interval fields)
+  - stockout and overstock impact (mean gap per step)
 - [ ] Build champion/challenger promotion:
   - fixed backtest windows
   - leakage checks
