@@ -6,7 +6,7 @@
 
 **Architecture:** Use a governed core for canonical data, feature generation, model training, promotion, replenishment policy, monitoring, and approvals. Add bounded agentic extension paths for EDA, adapters, feature engineering, and forecasting code only when standard tools fail, capped at three attempts per layer. Store durable learning in markdown; use graph/memory systems as indexes over the artifacts.
 
-**Tech Stack:** UiPath for orchestration and approvals; Python forecasting/ML harness; XGBoost and baseline forecasting model families; markdown knowledge artifacts; optional Graphify/mem0-style retrieval index; cockpit UI for observability.
+**Tech Stack:** Python forecasting/ML harness; XGBoost and baseline forecasting model families; markdown knowledge artifacts; optional Graphify/mem0-style retrieval index; cockpit UI for observability.
 
 ---
 
@@ -20,7 +20,7 @@ Strengths:
 - Strong auditability and enterprise trust.
 - Clear separation between raw data, canonical data, features, models, policy, and learning.
 - Handles messy production data without making the model layer chaotic.
-- Fits UiPath orchestration well.
+- Fits a self-contained Python platform well.
 - Supports future subagent-driven implementation.
 
 Weaknesses:
@@ -204,35 +204,21 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
 
 > ✅ **Phase 5 complete (2026-06-17).** 5.1 (metric portfolio) + 5.2 (champion/challenger promotion) + 5.3 (replenishment policy) all landed.
 
-### Phase 6: UiPath Orchestration
+### Phase 6: Approvals, Scheduling, And ERP Handoff
 
-**Scope correction (2026-06-17).** UiPath Orchestrator is the production approval and scheduling engine, but it lives outside this repository — in a UiPath tenant (Orchestrator + Studio + Unattended Robot) and a separate UiPath project (Studio workflows, Queues, Triggers). What this repo owns is the **typed integration boundary**: the contracts, the local stand-in gateway and scheduler, and one runnable end-to-end approval round-trip that proves the boundary works. The UiPath-side implementation is a parallel workstream documented here but built and versioned in a different repository.
+The platform's own native layer for: (1) raising approval requests to a human and recording the decision, (2) scheduling recurring jobs (data refresh, validation, forecast generation, review, monitoring, drift investigation), and (3) assembling the ERP handoff payload from an approved replenishment batch. The cockpit UI is the surface the human interacts with; the in-process gateway and scheduler are the engine. The two are deliberately decoupled behind small ABCs (`ApprovalGateway`, `Scheduler`) so a future external orchestrator (UiPath, SAP iRPA, a custom web service) can plug in behind the same interfaces without changing the rest of the platform.
 
 **What this repo ships (Phase 6 in-repo):**
 
 - [x] CB1 — rewrite the Phase 6 section in this plan to make the in-repo / out-of-repo split explicit (done 2026-06-17, `d098109`).
 - [x] CB2 — typed contracts in `contracts.py` for the integration boundary: `ApprovalRequest`, `ApprovalDecision`, `ApprovalEvent`, `ScheduledJobTrigger`, `ScheduledJobRun`, `ErpHandoffPayload`. Pure Pydantic, no I/O (done 2026-06-17, `195afee`).
-- [x] CB3 — `ApprovalGateway` interface + `InProcessApprovalGateway` implementation. The platform raises an `ApprovalRequest` whenever `cockpit_state.approval_needed` flips on; the gateway holds the request until a human calls `acknowledge(request_id, decision, approver, reason)`. Records every decision to `outputs/{run_id}/approvals.jsonl` for audit. The in-process implementation is the default; a future `UiPathApprovalGateway` plugs in behind the same interface (done 2026-06-17, `ba7e58e`).
+- [x] CB3 — `ApprovalGateway` interface + `InProcessApprovalGateway` implementation. The platform raises an `ApprovalRequest` whenever `cockpit_state.approval_needed` flips on; the gateway holds the request until a human calls `acknowledge(request_id, decision, approver, reason)`. Records every decision to `outputs/{run_id}/approvals.jsonl` for audit. The in-process implementation is the default; an alternative gateway can plug in behind the same interface (done 2026-06-17, `ba7e58e`).
 - [x] CB4 — `Scheduler` (cron-style tick) that fires the trigger kinds: `data_refresh`, `validation`, `forecast_generation`, `review`, `monitoring`, `drift_investigation`. Triggers land in a queue consumed by the in-process runner; the in-process runner calls the existing `preflight.py` / `forecast_harness.py` / replenishment code paths. No new business logic — scheduling is glue (done 2026-06-17, `0063b5d`).
 - [x] CB5 — full-chain integration test: scheduler fires `data_refresh` -> preflight -> foundry -> replenishment reaches a `REQUIRED_HUMAN_APPROVAL` tier -> `InProcessApprovalGateway` records a `PENDING` request -> human calls `acknowledge(APPROVE)` -> replenishment recommendation is released -> `ErpHandoffPayload` is written and asserted to be structurally consumable (done 2026-06-17, `e959989`).
+- [x] CB6 — tick the plan checkboxes, mark Phase 6 complete, add glossary terms (done 2026-06-17, `1da0f77`).
+- [x] CB7 — drop UiPath from the plan, glossary, and module docstrings. The in-process design is the design; no external orchestrator is implied (done 2026-06-17).
 
-**What this repo does NOT ship (Phase 6 UiPath-side, separate repo):**
-
-- UiPath Studio project (REFramework-based dispatcher + performer workflows).
-- Orchestrator Queue definition and Queue Items.
-- Unattended Robot configuration and credentials asset.
-- Triggers (Time, Queue, Event) in Orchestrator.
-- HTTP connector from UiPath back to the platform's `/api/v1/approvals` and `/api/v1/erp-handoff` endpoints.
-- Production secrets management (UiPath Assets + the platform's secret store).
-
-The UiPath-side work is tracked here as an **out-of-repo dependency** because the deliverable is a deployable UiPath project, not source code in Agent_A. The integration contract that the UiPath project must respect is the typed surface from CB2 and the HTTP shape of the two endpoints the gateway reads/writes.
-
-**Acceptance for Phase 6 in-repo:**
-- All 7 approval kinds listed in the original plan (data contract, risky schema semantics, custom code permission, unforecastable grain fallback, official forecast publication, replenishment recommendations, ERP/procurement handoff) are expressible as `ApprovalRequest.kind` values.
-- All 6 scheduled job kinds (data refresh, validation, forecast generation, review, monitoring, drift investigation) are expressible as `ScheduledJobTrigger.kind` values.
-- `InProcessApprovalGateway` and `Scheduler` are 100% unit-tested with no I/O outside the test tmp dir.
-- The full-chain integration test (CB5) runs green and asserts the released `ErpHandoffPayload` contains the expected replenishment recommendations, approval decision, and audit trail.
-- The plan documents the out-of-repo UiPath workstream and the HTTP contract it must implement.
+**Future external integrations:** an alternative `ApprovalGateway` or `Scheduler` implementation (UiPath, SAP iRPA, a custom web service, a webhook) can plug in behind the same interfaces. The contracts and the cockpit UI are unchanged. Today's deployment uses the in-process implementations; the seam exists for the day the team chooses to add a real integration, not because one is planned.
 
 ### Phase 7: Monitoring And Augmented MLOps
 
@@ -301,12 +287,12 @@ The UiPath-side work is tracked here as an **out-of-repo dependency** because th
 - Markdown is durable source of truth.
 - Graph/memory systems index markdown; they do not replace it.
 - Harnesses decide promotion; agents propose candidates and evidence.
-- UiPath governs approvals and downstream action.
+- The platform's own approval workflow governs human sign-off; downstream actions (ERP release, future external integrations) are triggered by approved requests only.
 - Cockpit explains what the platform is doing in real time.
 
 ## Self-Review
 
-Spec coverage: covers workspace, DS-STAR resilience, AutoResearch learning, UiPath orchestration, feature engineering, EDA, custom code escalation, model harness, MLOps, monitoring, drift, and cockpit.
+Spec coverage: covers workspace, DS-STAR resilience, AutoResearch learning, approvals + scheduling + ERP handoff, feature engineering, EDA, custom code escalation, model harness, MLOps, monitoring, drift, and cockpit.
 
 Placeholder scan: no open TBD/TODO placeholders remain.
 
@@ -316,7 +302,7 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 - feature factory
 - forecast harness
 - MLOps and registry
-- UiPath orchestration
+- approvals + scheduling + ERP handoff
 - cockpit UI
 
 ## Progress Summary (as of 2026-06-14)
@@ -329,6 +315,6 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 | 4: Forecasting Harness | ✅ Complete | 6 governed model families + ensemble + custom-family escalation. `forecasting_models.py`, `ensemble.py`, `model_escalation.py`, `forecast_harness.py`. New contracts: `ModelFamilyName`, `ModelScorecard`, `RobustnessCheck`, `ForecastRequest`, `ForecastHarnessReport`, `EnsembleSummary`, `ModelFailureReport`. 83 new tests; 299 total pass. |
 | 4.1: Two-Path Escalation + Proposal Tool | ✅ Complete (2026-06-17) | 7 sub-checkboxes (CB1-CB7): Proposal contracts, decompose_residuals, propose_feature_changes, marginal-gain stop condition, config-escalation loop, card lifecycle, MODEL_REGISTRY provenance. 117 new tests (18+16+17+17+20+11+18); full suite 422 passing. `Escalation Path` term in `CONTEXT.MD`. |
 | 5: Evaluation, Promotion, Replenishment | ✅ Complete (2026-06-17) | 5.1 metric portfolio + 5.2 champion/challenger promotion + 5.3 deterministic replenishment policy. 105 new tests (20+17+10+11+8+9+7+5+18 misc); full suite 544 passing. New module `replenishment.py` (ReplenishmentConfig, InventoryState, ApprovalTier, ReplenishmentRecommendation, compute_lead_time_demand, compute_safety_stock, compute_reorder_point, compute_order_quantity, classify_approval_tier, compute_replenishment). |
-| 6: UiPath Orchestration | ✅ Complete (2026-06-17) | In-repo boundary landed: 5 sub-checkboxes (CB1 plan rewrite, CB2 typed contracts, CB3 InProcessApprovalGateway, CB4 LocalScheduler, CB5 full-chain integration). 102 new tests (40 + 26 + 27 + 9); full suite 646 passing. New modules: `approval_gateway.py`, `scheduler.py`, `erp_release.py`. UiPath-side (Studio project, Orchestrator Queue, Robot, Triggers) remains an out-of-repo workstream that consumes the typed boundary. |
+| 6: Approvals, Scheduling, ERP Handoff | ✅ Complete (2026-06-17) | 7 sub-checkboxes (CB1 plan rewrite, CB2 typed contracts, CB3 InProcessApprovalGateway, CB4 LocalScheduler, CB5 full-chain integration, CB6 tick + glossary, CB7 drop UiPath from framing). 102 new tests (40 + 26 + 27 + 9); full suite 646 passing. New modules: `approval_gateway.py`, `scheduler.py`, `erp_release.py`. The `ApprovalGateway` and `Scheduler` ABCs are future-proof seams: an alternative implementation (UiPath, SAP iRPA, a webhook) can plug in behind the same interfaces without changing the rest of the platform. |
 | 7: Monitoring & Augmented MLOps | ❌ Not started | |
 | 8: Data Intelligence Cockpit | ⚠️ Partial | Live state model done; no UI surfaces or plots |

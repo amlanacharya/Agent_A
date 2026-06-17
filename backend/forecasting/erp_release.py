@@ -1,8 +1,8 @@
-"""Phase 6 CB5: ERP release service — the in-process stand-in for the
-UiPath ERP handoff step.
+"""Phase 6 CB5: ERP release service — assembles the typed handoff
+payload from an approved replenishment batch.
 
 Wires the approval gateway and the replenishment pipeline into the
-final handoff to ERP/procurement. Two operations:
+final release to ERP/procurement. Two operations:
 
 * ``request_replenishment_approvals`` — for every recommendation
   whose ``approval_tier`` is not ``"auto"``, raise an
@@ -13,14 +13,14 @@ final handoff to ERP/procurement. Two operations:
 * ``release_erp_handoff`` — after a human APPROVEs a request, build
   an ``ErpHandoffPayload`` that joins the approved recommendations,
   the approval decision, and the audit trail. The payload is the
-  contract the UiPath-side performer workflow consumes to call
-  ERP; the in-process implementation just returns it (and CB5's
-  test asserts it is structurally consumable).
+  contract the cockpit UI displays and (optionally) hands to an
+  external ERP connector; the in-process implementation just
+  returns it.
 
 Design:
 
 * Pure of I/O: ``release_erp_handoff`` does not write to disk
-  itself. The caller (a UiPath workflow or a local test) decides
+  itself. The caller (the cockpit UI, a cron job, a webhook) decides
   where the payload lands. This keeps the function deterministic
   and trivial to assert against.
 * The release is a one-shot — a request that is still ``pending``
@@ -112,8 +112,8 @@ def release_erp_handoff(
     """Build the ERP handoff payload from an approved request.
 
     The caller is responsible for persisting the payload (writing
-    to disk, posting to UiPath, or calling ERP). This function
-    builds it and asserts the contract.
+    to disk, posting to ERP via a connector, or handing it to the
+    cockpit UI). This function builds it and asserts the contract.
 
     Raises ``RequestNotApprovedError`` if ``approved_request.status``
     is not ``"approved"``.
@@ -152,8 +152,10 @@ def release_erp_handoff(
         )
 
     # Pull the audit trail from the gateway's audit log. For the
-    # in-process implementation that's the JSONL file; for a UiPath
-    # implementation the gateway can return events from the Queue.
+    # in-process implementation that's the JSONL file; for an
+    # alternative gateway that doesn't expose the log the trail
+    # falls back to empty. The JSONL file is always the durable
+    # record; the trail on the payload is best-effort.
     audit_trail = _read_audit_trail(gateway, run_id, approved_request.request_id)
 
     return ErpHandoffPayload(
@@ -181,10 +183,9 @@ def _read_audit_trail(
 
     Uses the in-process gateway's ``read_audit_log`` helper if
     available; falls back to an empty list for any other
-    implementation that doesn't expose the log (e.g. a future
-    UiPath-side gateway might not surface the file path). The
-    audit_trail on the payload is best-effort — the JSONL file is
-    always the durable record.
+    implementation that doesn't expose the log. The audit_trail
+    on the payload is best-effort — the JSONL file is always the
+    durable record.
     """
     read_log = getattr(gateway, "read_audit_log", None)
     if read_log is None:

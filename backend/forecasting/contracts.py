@@ -943,15 +943,22 @@ ForecastHarnessReport.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
-# Phase 6: UiPath Orchestration integration boundary
+# Phase 6: Approvals, Scheduling, ERP Handoff
 # ---------------------------------------------------------------------------
-# Phase 6 draws the line between this repo and the UiPath Orchestrator
-# (the production approval + scheduling engine). The in-repo work is
-# strictly the typed boundary the UiPath project consumes; the UiPath
-# side (Studio workflows, Orchestrator Queues, Unattended Robot) lives
-# in a separate repository. Keeping these contracts pure Pydantic with
-# no I/O makes them easy to assert against in tests and impossible to
-# leak platform internals into UiPath assets.
+# Phase 6 is the platform's own native layer for human approvals,
+# scheduled jobs, and the ERP handoff payload. The cockpit UI is the
+# surface the human interacts with; the in-process gateway and
+# scheduler are the engine. The two are deliberately decoupled behind
+# small ABCs (``ApprovalGateway``, ``Scheduler``) so a future
+# alternative implementation (a webhook, an external workflow, an
+# enterprise scheduler) can plug in behind the same interfaces
+# without changing the rest of the platform. None of those
+# alternatives is planned today; the seam exists for the day one
+# is chosen, not as a current dependency.
+#
+# Keeping these contracts pure Pydantic with no I/O makes them easy
+# to assert against in tests and impossible to leak platform
+# internals into the cockpit UI or any future consumer.
 #
 # The naming follows the principle the rest of the platform uses:
 #   - "kind" is a closed Literal (the set the platform actually emits)
@@ -964,8 +971,9 @@ ForecastHarnessReport.model_rebuild()
 
 
 # All seven approval kinds from the original Phase 6 plan. New kinds
-# must be added to this Literal; a closed set keeps the UiPath-side
-# Queue/Form mapping finite and reviewable.
+# must be added to this Literal; a closed set keeps the cockpit's
+# approval widget and any future consumer's mapping finite and
+# reviewable.
 ApprovalKind = Literal[
     "data_contract",                 # user signs off on the schema mapping
     "risky_schema_semantics",        # user accepts ambiguous column meanings
@@ -983,9 +991,9 @@ ApprovalDecisionValue = Literal["APPROVE", "REJECT", "DEFER"]
 class ApprovalRequest(BaseModel):
     """A request the platform raises when a decision needs a human.
 
-    The gateway (InProcess today, UiPath tomorrow) holds the request
-    until a human calls acknowledge() with a decision. ``run_id`` is
-    the platform's run; ``request_id`` is the gateway's local id.
+    The gateway holds the request until a human calls
+    acknowledge() with a decision. ``run_id`` is the platform's
+    run; ``request_id`` is the gateway's local id.
     """
 
     request_id: str
@@ -1097,9 +1105,9 @@ class ErpHandoffPayload(BaseModel):
     # Per-series recommendations released to ERP. Typed as a list of
     # dicts (rather than importing ReplenishmentRecommendation
     # directly) to keep the boundary free of internal contract
-    # coupling — UiPath does not need to know the platform's full
-    # recommendation shape, only the fields ERP needs (sku, location,
-    # quantity, unit, request_date).
+    # coupling — the cockpit UI and any future consumer do not need
+    # to know the platform's full recommendation shape, only the
+    # fields ERP needs (sku, location, quantity, unit, request_date).
     recommendations: list[dict[str, object]] = Field(default_factory=list)
     # A flat audit trail joining the request, decision, and release.
     audit_trail: list[ApprovalEvent] = Field(default_factory=list)

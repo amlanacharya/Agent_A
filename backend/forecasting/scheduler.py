@@ -1,10 +1,10 @@
-"""Phase 6 CB4: LocalScheduler — the in-process stand-in for UiPath Triggers.
+"""Phase 6 CB4: LocalScheduler — the platform's native in-process
+scheduler.
 
 The platform schedules recurring work (data refresh, validation,
-forecast generation, review, monitoring, drift investigation). In
-production those triggers live in UiPath Orchestrator (Time, Queue,
-Event triggers). In this repo the default implementation is
-``LocalScheduler`` — a pure-Python, in-process tick loop that:
+forecast generation, review, monitoring, drift investigation). The
+default implementation is ``LocalScheduler`` — a pure-Python,
+in-process tick loop that:
 
 * owns a list of ``ScheduledJobTrigger``s
 * evaluates each trigger's ``cron`` expression on every ``tick()``
@@ -17,18 +17,18 @@ Event triggers). In this repo the default implementation is
 Design:
 
 * Pure glue. No domain logic, no LLM calls, no platform imports
-  beyond ``contracts.py``. The runner is injected; CB5 wires the
-  real platform entry points.
+  beyond ``contracts.py``. The runner is injected; the cockpit UI
+  registers and unregisters triggers through the FastAPI layer.
 * Deterministic with explicit ``now=``. Tests pass an explicit
   datetime; production calls ``tick()`` with no argument and the
   scheduler reads ``datetime.now(timezone.utc)``.
 * Triggers persist to ``state_path`` (JSON); the file is rewritten
   on every mutation. On a process restart the scheduler rebuilds
   the trigger list from disk.
-* Every ``ScheduledJobRun`` is appended to a per-run JSONL audit
-  log at ``outputs/{run_id}/scheduler_runs.jsonl``. The directory
-  layout mirrors the gateway's audit log so a single ``outputs``
-  root serves both.
+* Every ``ScheduledJobRun`` is appended to a per-trigger JSONL
+  audit log at ``outputs/{run_id}/scheduler_runs.jsonl``. The
+  directory layout mirrors the gateway's audit log so a single
+  ``outputs`` root serves both.
 
 Supported cron forms (no full cron parser — keep it tiny):
 
@@ -165,9 +165,13 @@ _ACTIVE_STATUSES = ("running", "awaiting_approval")
 class Scheduler(ABC):
     """Interface every scheduler implements.
 
-    The UiPath-side implementation translates the same trigger list
-    into Orchestrator Triggers (Time, Queue, Event). The in-process
-    implementation owns the trigger list and the tick loop.
+    The contract is small: register, unregister, list, tick. The
+    in-process implementation owns the trigger list and the tick
+    loop; an alternative implementation (a webhook that defers
+    to an external cron service, an enterprise scheduler) would
+    translate the same trigger list into its native primitives.
+    The platform and the cockpit UI never touch an implementation
+    directly — they call the interface.
     """
 
     @abstractmethod

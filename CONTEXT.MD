@@ -220,7 +220,7 @@ _Avoid_: What-if run, child run, Prism run
 ### Orchestration Boundary (Phase 6)
 
 **Approval Request**:
-A typed request the platform raises when a decision needs a human (data contract, replenishment batch, ERP release, etc.). The platform owns the request shape (`ApprovalRequest` in `contracts.py`); the gateway — in-process or UiPath — owns the storage and the round-trip back to the human. Carries a `kind` (one of seven closed Literal values), a `payload` preview, a `requested_by`, and the `status` (`pending` / `approved` / `rejected`). `DEFER` is a non-terminal decision: the request stays `pending` and can be acknowledged again later.
+A typed request the platform raises when a decision needs a human (data contract, replenishment batch, ERP release, etc.). The platform owns the request shape (`ApprovalRequest` in `contracts.py`); the gateway — the in-process `InProcessApprovalGateway` by default — owns the storage and the round-trip back to the human. Carries a `kind` (one of seven closed Literal values), a `payload` preview, a `requested_by`, and the `status` (`pending` / `approved` / `rejected`). `DEFER` is a non-terminal decision: the request stays `pending` and can be acknowledged again later. The `ApprovalGateway` ABC is a future-proof seam: an alternative implementation (a webhook, a SAP workflow, etc.) can plug in behind the same interface without changing the rest of the platform.
 _Avoid_: Approval flag, review task, decision ticket
 
 **Scheduled Job**:
@@ -228,5 +228,5 @@ One tick of a registered `ScheduledJobTrigger` against an injected runner. The s
 _Avoid_: Cron job, schedule entry, task
 
 **ERP Handoff Payload**:
-The typed package released to ERP/procurement after a human approves a replenishment batch. Built only from an `approved` request; pending or rejected requests are a hard block (`RequestNotApprovedError`). Carries the per-series recommendations (narrowed to the fields ERP needs), the approval summary (approver, reason, timestamp), and the full audit trail joined from the gateway's event log. The UiPath-side performer workflow consumes this payload unchanged.
+The typed package released to ERP/procurement after a human approves a replenishment batch. Built only from an `approved` request; pending or rejected requests are a hard block (`RequestNotApprovedError`). Carries the per-series recommendations (narrowed to the fields ERP needs), the approval summary (approver, reason, timestamp), and the full audit trail joined from the gateway's event log. The release is pure — it produces the payload; the caller (the cockpit UI, a cron job, a webhook, a future external integration) decides where the payload lands and how it reaches ERP.
 _Avoid_: Release package, ERP request, posting payload

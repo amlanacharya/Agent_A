@@ -1,10 +1,12 @@
-"""Tests for Phase 6 CB2: UiPath Orchestration integration-boundary contracts.
+"""Tests for Phase 6 CB2: Approvals, Scheduling, and ERP Handoff
+contracts.
 
 The contracts in ``backend/forecasting/contracts.py`` at the bottom of
 the file (ApprovalRequest, ApprovalEvent, ScheduledJobTrigger,
 ScheduledJobRun, ErpHandoffPayload, and the associated Literal
-aliases) define the typed surface the platform uses to talk to the
-UiPath Orchestrator. These tests assert:
+aliases) define the typed surface the cockpit UI consumes and (in
+the future) any alternative gateway or scheduler implementation
+consumes. These tests assert:
 
 * Every approval kind and scheduled job kind the original Phase 6 plan
   calls out is expressible (closed set; the Literal accepts the value).
@@ -13,8 +15,8 @@ UiPath Orchestrator. These tests assert:
 * Default values match the documented behaviour (pending request,
   no decision recorded, empty payloads, etc.).
 * Round-trip through ``model_dump`` / ``model_validate`` preserves
-  data — the gateway is expected to serialise these to JSON for
-  UiPath, so lossy serialisation is a contract violation.
+  data — the cockpit consumes JSON, so lossy serialisation is a
+  contract violation.
 * Invalid values for the closed Literals raise ValidationError — the
   whole point of the closed set is to fail loud at construction.
 """
@@ -292,7 +294,7 @@ def test_approval_event_rejects_unknown_type() -> None:
 
 
 # ---------------------------------------------------------------------------
-# JSON round-trip (UiPath consumes JSON, so this is the wire shape)
+# JSON round-trip (the cockpit UI consumes JSON, so this is the wire shape)
 # ---------------------------------------------------------------------------
 
 

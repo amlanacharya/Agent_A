@@ -1,12 +1,13 @@
-"""Phase 6 CB3: approval gateway — the in-process stand-in for UiPath.
+"""Phase 6 CB3: approval gateway — the platform's native in-process
+approval store.
 
-The platform raises an ``ApprovalRequest`` whenever a decision needs a
-human. In production that request travels to the UiPath Orchestrator
-(Queue + Form) and back via the ``UiPathApprovalGateway`` (separate
-repo, out of scope here). In this repo the default implementation is
-``InProcessApprovalGateway`` — a pure-Python, in-memory stand-in that
-exposes the same surface and persists every state change to
-``backend/outputs/{run_id}/approvals.jsonl`` for audit.
+The platform raises an ``ApprovalRequest`` whenever a decision needs
+a human. The default implementation is ``InProcessApprovalGateway``
+— a pure-Python, in-memory store that exposes the same surface a
+future external integration (webhook, SAP workflow, anything that
+can speak the ``ApprovalGateway`` interface) would expose. The
+cockpit UI talks to it directly through the FastAPI layer; there is
+no second runtime in the deployment today.
 
 Design:
 
@@ -14,15 +15,16 @@ Design:
   holds an in-memory dict keyed by ``request_id`` and writes one
   ``ApprovalEvent`` to the audit log per state change.
 * The audit log is append-only JSON Lines. The platform can replay
-  the full lifecycle of a request from the log alone — the in-memory
-  dict is rebuilt at startup by reading the log (see ``load_from_audit``).
+  the full lifecycle of a request from the log alone — the
+  in-memory dict is the live state for the running process; the
+  JSONL file is the durable record across restarts.
 * Decoupled from ``cockpit_state``: the gateway doesn't know about
   ``CockpitState``. Callers (platform code) raise a request, then
   flip ``cockpit_state.approval_needed`` themselves — keeps the
   gateway testable without a ``RunState``.
 * The interface (``ApprovalGateway``) is an ABC so a future
-  ``UiPathApprovalGateway`` can drop in without changing the rest of
-  the platform.
+  alternative implementation can drop in without changing the rest
+  of the platform.
 """
 
 from __future__ import annotations
@@ -65,10 +67,12 @@ class ApprovalGateway(ABC):
     """Interface every approval gateway implements.
 
     The contract is small on purpose: raise, acknowledge, fetch,
-    list. A UiPath-side implementation would translate raise to a
-    Queue Item creation and acknowledge to a Form submission; the
-    in-process implementation just mutates an in-memory dict and
-    writes an audit line.
+    list. The in-process implementation mutates an in-memory dict
+    and writes an audit line; an alternative implementation (a
+    webhook, an external workflow) would translate raise to whatever
+    its own event looks like and acknowledge to whatever its
+    callback mechanism is. The platform and the cockpit UI never
+    touch an implementation directly — they call the interface.
     """
 
     @abstractmethod
@@ -173,8 +177,9 @@ class InProcessApprovalGateway(ApprovalGateway):
                 continue
             # Pending: leave alone — the in-memory dict is the truth.
         # The gateway's in-memory dict is the source of truth for
-        # pending requests; this helper exists so a UiPath-backed
-        # implementation can sync after a restart if it needs to.
+        # pending requests; this helper exists so a future
+        # alternative implementation can sync after a restart if it
+        # needs to.
         return requests
 
     # ----- ApprovalGateway surface -----------------------------------------

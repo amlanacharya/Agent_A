@@ -11,13 +11,10 @@ release into one runnable end-to-end approval round-trip:
       -> release service writes ErpHandoffPayload
       -> test asserts the payload is structurally consumable
 
-In production this is exactly the path UiPath drives: the
-``UiPathApprovalGateway`` replaces the in-process one, the
-``UiPathOrchestratorScheduler`` replaces the in-process one, and the
-release service is the same Python code (because the in-process and
-UiPath gateways speak the same ``ApprovalRequest`` / ``ApprovalEvent``
-contract). The test exercises the in-process path; the UiPath
-deployment swaps the gateway without changing this code.
+The in-process path is the only path shipped today. The seam in the
+``ApprovalGateway`` and ``Scheduler`` ABCs means a future
+alternative implementation (a webhook, an external workflow) can
+swap in behind the same interfaces without changing this test.
 """
 
 from __future__ import annotations
@@ -321,9 +318,10 @@ def test_full_chain_data_refresh_to_erp_handoff(
        run_id, request id, approver, the recommendation dict, and
        a complete audit trail.
 
-    This test is the runnable proof that the Phase 6 boundary
-    works end-to-end. The UiPath-side swap (different gateway
-    implementation) does not change this test.
+    This test is the runnable proof that the Phase 6 stack works
+    end-to-end. Any future alternative gateway or scheduler
+    implementation that drops in behind the ABCs will exercise
+    the same code path.
     """
     run_id = "run-chain-1"
 
@@ -483,7 +481,7 @@ def test_full_chain_uses_real_replenishment_thresholds(
 
 
 # ---------------------------------------------------------------------------
-# ErpHandoffPayload JSON round-trip (the wire shape UiPath consumes)
+# ErpHandoffPayload JSON round-trip (the wire shape the cockpit UI consumes)
 # ---------------------------------------------------------------------------
 
 
@@ -492,7 +490,7 @@ def test_erp_handoff_payload_round_trips_through_json(
 ) -> None:
     """The whole point of the typed boundary: any implementation of
     the ApprovalGateway that produces an ErpHandoffPayload must
-    serialise to a UiPath-consumable JSON shape and back without
+    serialise to a cockpit-consumable JSON shape and back without
     loss."""
     recs = [_make_recommendation("SKU_A|WEST", order_quantity=150)]
     [(recommendation, request_id)] = request_replenishment_approvals(
