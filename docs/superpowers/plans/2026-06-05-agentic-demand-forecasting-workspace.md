@@ -192,7 +192,7 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - segment scorecards
   - shadow mode where needed
   - promotion decision markdown
-- [ ] Build deterministic replenishment policy:
+- [x] Build deterministic replenishment policy (CB1 done 2026-06-17: lead-time demand + safety stock + ROP contracts and math; CB2-CB5 pending):
   - lead-time demand
   - safety stock
   - reorder point
