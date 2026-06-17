@@ -206,23 +206,33 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
 
 ### Phase 6: UiPath Orchestration
 
-- [ ] Route approvals for:
-  - data contract
-  - risky schema semantics
-  - custom code permission
-  - unforecastable grain fallback
-  - official forecast publication
-  - replenishment recommendations
-  - ERP/procurement handoff
-- [ ] Schedule runs:
-  - data refresh
-  - validation
-  - forecast generation
-  - review
-  - monitoring
-  - drift investigation
+**Scope correction (2026-06-17).** UiPath Orchestrator is the production approval and scheduling engine, but it lives outside this repository — in a UiPath tenant (Orchestrator + Studio + Unattended Robot) and a separate UiPath project (Studio workflows, Queues, Triggers). What this repo owns is the **typed integration boundary**: the contracts, the local stand-in gateway and scheduler, and one runnable end-to-end approval round-trip that proves the boundary works. The UiPath-side implementation is a parallel workstream documented here but built and versioned in a different repository.
 
-> ❌ **Phase 6 not started.** Approval-needed flag exists in `cockpit_state.py` but UiPath routing and scheduling are not implemented.
+**What this repo ships (Phase 6 in-repo):**
+
+- [ ] CB1 — rewrite the Phase 6 section in this plan to make the in-repo / out-of-repo split explicit (in progress 2026-06-17).
+- [ ] CB2 — typed contracts in `contracts.py` for the integration boundary: `ApprovalRequest`, `ApprovalDecision`, `ApprovalEvent`, `ScheduledJobTrigger`, `ScheduledJobRun`, `ErpHandoffPayload`. Pure Pydantic, no I/O.
+- [ ] CB3 — `ApprovalGateway` interface + `InProcessApprovalGateway` implementation. The platform raises an `ApprovalRequest` whenever `cockpit_state.approval_needed` flips on; the gateway holds the request until a human calls `acknowledge(request_id, decision, approver, reason)`. Records every decision to `outputs/{run_id}/approvals.jsonl` for audit. The in-process implementation is the default; a future `UiPathApprovalGateway` plugs in behind the same interface.
+- [ ] CB4 — `Scheduler` (cron-style tick) that fires the trigger kinds: `data_refresh`, `validation`, `forecast_generation`, `review`, `monitoring`, `drift_investigation`. Triggers land in a queue consumed by the in-process runner; the in-process runner calls the existing `preflight.py` / `forecast_harness.py` / replenishment code paths. No new business logic — scheduling is glue.
+- [ ] CB5 — full-chain integration test: scheduler fires `data_refresh` -> preflight -> foundry -> replenishment reaches a `REQUIRED_HUMAN_APPROVAL` tier -> `InProcessApprovalGateway` records a `PENDING` request -> human calls `acknowledge(APPROVE)` -> replenishment recommendation is released -> `ErpHandoffPayload` is written and asserted to be structurally consumable.
+
+**What this repo does NOT ship (Phase 6 UiPath-side, separate repo):**
+
+- UiPath Studio project (REFramework-based dispatcher + performer workflows).
+- Orchestrator Queue definition and Queue Items.
+- Unattended Robot configuration and credentials asset.
+- Triggers (Time, Queue, Event) in Orchestrator.
+- HTTP connector from UiPath back to the platform's `/api/v1/approvals` and `/api/v1/erp-handoff` endpoints.
+- Production secrets management (UiPath Assets + the platform's secret store).
+
+The UiPath-side work is tracked here as an **out-of-repo dependency** because the deliverable is a deployable UiPath project, not source code in Agent_A. The integration contract that the UiPath project must respect is the typed surface from CB2 and the HTTP shape of the two endpoints the gateway reads/writes.
+
+**Acceptance for Phase 6 in-repo:**
+- All 7 approval kinds listed in the original plan (data contract, risky schema semantics, custom code permission, unforecastable grain fallback, official forecast publication, replenishment recommendations, ERP/procurement handoff) are expressible as `ApprovalRequest.kind` values.
+- All 6 scheduled job kinds (data refresh, validation, forecast generation, review, monitoring, drift investigation) are expressible as `ScheduledJobTrigger.kind` values.
+- `InProcessApprovalGateway` and `Scheduler` are 100% unit-tested with no I/O outside the test tmp dir.
+- The full-chain integration test (CB5) runs green and asserts the released `ErpHandoffPayload` contains the expected replenishment recommendations, approval decision, and audit trail.
+- The plan documents the out-of-repo UiPath workstream and the HTTP contract it must implement.
 
 ### Phase 7: Monitoring And Augmented MLOps
 
@@ -319,6 +329,6 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 | 4: Forecasting Harness | ✅ Complete | 6 governed model families + ensemble + custom-family escalation. `forecasting_models.py`, `ensemble.py`, `model_escalation.py`, `forecast_harness.py`. New contracts: `ModelFamilyName`, `ModelScorecard`, `RobustnessCheck`, `ForecastRequest`, `ForecastHarnessReport`, `EnsembleSummary`, `ModelFailureReport`. 83 new tests; 299 total pass. |
 | 4.1: Two-Path Escalation + Proposal Tool | ✅ Complete (2026-06-17) | 7 sub-checkboxes (CB1-CB7): Proposal contracts, decompose_residuals, propose_feature_changes, marginal-gain stop condition, config-escalation loop, card lifecycle, MODEL_REGISTRY provenance. 117 new tests (18+16+17+17+20+11+18); full suite 422 passing. `Escalation Path` term in `CONTEXT.MD`. |
 | 5: Evaluation, Promotion, Replenishment | ✅ Complete (2026-06-17) | 5.1 metric portfolio + 5.2 champion/challenger promotion + 5.3 deterministic replenishment policy. 105 new tests (20+17+10+11+8+9+7+5+18 misc); full suite 544 passing. New module `replenishment.py` (ReplenishmentConfig, InventoryState, ApprovalTier, ReplenishmentRecommendation, compute_lead_time_demand, compute_safety_stock, compute_reorder_point, compute_order_quantity, classify_approval_tier, compute_replenishment). |
-| 6: UiPath Orchestration | ❌ Not started | |
+| 6: UiPath Orchestration | 🟡 In progress (2026-06-17) | Scope corrected: in-repo owns the typed integration boundary (contracts + in-process gateway + scheduler + one runnable approval round-trip); UiPath-side (Studio project, Orchestrator Queue, Robot, Triggers) is an out-of-repo workstream that consumes the boundary. CB1 (plan rewrite) done. |
 | 7: Monitoring & Augmented MLOps | ❌ Not started | |
 | 8: Data Intelligence Cockpit | ⚠️ Partial | Live state model done; no UI surfaces or plots |

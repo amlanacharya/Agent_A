@@ -95,3 +95,10 @@ MODEL_HEALTH.md
 # UiPath
 *.nupkg
 .local/
+
+# Tooling and reports that are machine-local or generated (never commit)
+.claude/
+.teach-architecture/
+graphify-out/
+backend/forecasting/graphify-out/
+platform-explorer.html
