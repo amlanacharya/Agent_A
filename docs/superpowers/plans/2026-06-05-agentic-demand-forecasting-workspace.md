@@ -192,7 +192,7 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - segment scorecards
   - shadow mode where needed
   - promotion decision markdown
-- [x] Build deterministic replenishment policy (CB1 done 2026-06-17: lead-time demand + safety stock + ROP contracts and math; CB2 done 2026-06-17: MOQ + pack size + inventory reconciliation; CB3 done 2026-06-17: approval tiers; CB4-CB5 pending):
+- [x] Build deterministic replenishment policy (CB1 done 2026-06-17: lead-time demand + safety stock + ROP contracts and math; CB2 done 2026-06-17: MOQ + pack size + inventory reconciliation; CB3 done 2026-06-17: approval tiers; CB4 done 2026-06-17: ReplenishmentRecommendation + compute_replenishment orchestrator; CB5 pending):
   - lead-time demand
   - safety stock
   - reorder point

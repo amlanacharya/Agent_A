@@ -42,6 +42,8 @@ import math
 from dataclasses import dataclass
 from typing import Literal
 
+from pydantic import BaseModel
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -284,13 +286,98 @@ def classify_approval_tier(
     return "large"
 
 
+# ---------------------------------------------------------------------------
+# CB4: orchestrator + recommendation model
+# ---------------------------------------------------------------------------
+
+
+class ReplenishmentRecommendation(BaseModel):
+    """The output of ``compute_replenishment`` for one series.
+
+    Carries every intermediate value so the audit log can
+    explain WHY this recommendation was made (not just WHAT
+    the recommendation is). The cockpit surfaces the full
+    record; the platform's approval workflow keys on
+    ``order_quantity`` and ``approval_tier``.
+    """
+
+    series_key: str
+    lead_time_days: int
+    forecast_std: float
+    lead_time_demand: float
+    safety_stock: float
+    reorder_point: float
+    target_inventory: float
+    current_inventory: float
+    open_purchase_orders: float
+    order_quantity: float
+    approval_tier: ApprovalTier
+
+
+def compute_replenishment(
+    *,
+    series_key: str,
+    forecast: list[float],
+    lead_time_days: int,
+    forecast_std: float,
+    inventory: InventoryState,
+    config: ReplenishmentConfig,
+) -> ReplenishmentRecommendation:
+    """The full replenishment pipeline for one series.
+
+    Steps:
+
+    1. ``lead_time_demand = compute_lead_time_demand(forecast, lead_time_days)``
+    2. ``safety_stock = compute_safety_stock(forecast_std, lead_time_days, config.service_level_z)``
+    3. ``ROP = compute_reorder_point(lead_time_demand, safety_stock)``
+    4. ``target_inventory = ROP + safety_stock`` — the
+       reorder target is the upper boundary, not just the ROP.
+       When inventory hits ROP, we order enough to refill to
+       ROP + safety_stock (defensive re-order).
+    5. ``order_quantity = compute_order_quantity(target_inventory, inventory, config)``
+    6. ``approval_tier = classify_approval_tier(order_quantity, config)``
+    7. Return the typed recommendation with every intermediate
+       value populated.
+
+    Pure function: no I/O, no LLM, no harness dependency.
+    The harness caller passes the forecast in.
+    """
+    lead_time_demand = compute_lead_time_demand(forecast, lead_time_days)
+    safety_stock = compute_safety_stock(
+        forecast_std, float(lead_time_days), config.service_level_z
+    )
+    reorder_point = compute_reorder_point(lead_time_demand, safety_stock)
+    target_inventory = reorder_point + safety_stock
+    order_quantity = compute_order_quantity(
+        target_inventory=target_inventory,
+        inventory=inventory,
+        config=config,
+    )
+    approval_tier = classify_approval_tier(order_quantity, config)
+    return ReplenishmentRecommendation(
+        series_key=series_key,
+        lead_time_days=lead_time_days,
+        forecast_std=forecast_std,
+        lead_time_demand=lead_time_demand,
+        safety_stock=safety_stock,
+        reorder_point=reorder_point,
+        target_inventory=target_inventory,
+        current_inventory=inventory.current_inventory,
+        open_purchase_orders=inventory.open_purchase_orders,
+        order_quantity=order_quantity,
+        approval_tier=approval_tier,
+    )
+
+
 __all__ = (
     "ReplenishmentConfig",
     "InventoryState",
     "ApprovalTier",
+    "ReplenishmentRecommendation",
     "compute_lead_time_demand",
     "compute_safety_stock",
     "compute_reorder_point",
     "compute_order_quantity",
     "classify_approval_tier",
+    "compute_replenishment",
 )

@@ -15,9 +15,11 @@ from forecasting.replenishment import (
     ApprovalTier,
     InventoryState,
     ReplenishmentConfig,
+    ReplenishmentRecommendation,
     classify_approval_tier,
     compute_lead_time_demand,
     compute_order_quantity,
+    compute_replenishment,
     compute_reorder_point,
     compute_safety_stock,
 )
@@ -391,3 +393,166 @@ def test_classify_returns_approval_tier_literal() -> None:
     valid: set[str] = {"auto", "small", "medium", "large"}
     for q in [0.0, 1.0, 100.0, 500.0, 10000.0, 50000.0]:
         assert classify_approval_tier(q, cfg) in valid
+
+
+# ---------------------------------------------------------------------------
+# compute_replenishment (CB4 orchestrator)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_replenishment_returns_full_recommendation() -> None:
+    """Every intermediate value is populated on the recommendation."""
+    forecast = [10.0, 12.0, 14.0, 16.0, 18.0, 20.0]
+    inv = _inv(current=20.0, open_pos=10.0)
+    cfg = ReplenishmentConfig(pack_size=5, moq=15)
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=forecast,
+        lead_time_days=4,
+        forecast_std=2.0,
+        inventory=inv,
+        config=cfg,
+    )
+    assert isinstance(rec, ReplenishmentRecommendation)
+    assert rec.series_key == "A"
+    assert rec.lead_time_days == 4
+    assert rec.forecast_std == 2.0
+    assert rec.current_inventory == 20.0
+    assert rec.open_purchase_orders == 10.0
+
+
+def test_compute_replenishment_target_inventory_is_rop_plus_safety() -> None:
+    """target_inventory = reorder_point + safety_stock."""
+    forecast = [10.0, 12.0, 14.0, 16.0]
+    cfg = ReplenishmentConfig()
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=forecast,
+        lead_time_days=4,
+        forecast_std=2.0,
+        inventory=_inv(),
+        config=cfg,
+    )
+    assert rec.target_inventory == rec.reorder_point + rec.safety_stock
+
+
+def test_compute_replenishment_zero_order_has_auto_tier() -> None:
+    """Inventory + POs already cover the target -> zero order -> auto tier.
+
+    forecast = [10, 12, 14, 14], lead_time_days=4:
+    - lead_time_demand = 50
+    - safety_stock = 1.65 * 2 * sqrt(4) = 6.6
+    - target_inventory = 50 + 6.6 + 6.6 = 63.2
+    - inventory.current=70, open_pos=0 -> raw = 63.2 - 70 = -6.8 -> 0
+    """
+    forecast = [10.0, 12.0, 14.0, 14.0]
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=forecast,
+        lead_time_days=4,
+        forecast_std=2.0,
+        inventory=_inv(current=70.0),
+        config=ReplenishmentConfig(),
+    )
+    assert rec.order_quantity == 0.0
+    assert rec.approval_tier == "auto"
+
+
+def test_compute_replenishment_large_order_has_large_tier() -> None:
+    """A high-quantity order is classified as large."""
+    cfg = ReplenishmentConfig(
+        pack_size=1,
+        moq=1,
+        approval_threshold_small=100.0,
+        approval_threshold_large=10000.0,
+    )
+    # Forecast = [30000] * 5 -> lead_time_demand (4 days) = 120000
+    # inventory = 0, open_pos = 0 -> raw = 120000 -> 120000 (no rounding)
+    forecast = [30000.0] * 5
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=forecast,
+        lead_time_days=4,
+        forecast_std=1000.0,
+        inventory=_inv(),
+        config=cfg,
+    )
+    assert rec.order_quantity > 10000.0
+    assert rec.approval_tier == "large"
+
+
+def test_compute_replenishment_full_chain_example() -> None:
+    """End-to-end: forecast + lead time + inventory + config -> recommendation.
+
+    Inputs:
+    - forecast = [10, 12, 14, 16, 18, 20]
+    - lead_time_days = 4
+    - forecast_std = 2.0
+    - service_level_z = 1.65 (default)
+    - inventory: current=20, open_pos=10
+    - pack_size=5, moq=15, approval thresholds default
+
+    Expected chain:
+    - lead_time_demand = 10+12+14+16 = 52
+    - safety_stock = 1.65 * 2 * sqrt(4) = 6.6
+    - reorder_point = 52 + 6.6 = 58.6
+    - target_inventory = 58.6 + 6.6 = 65.2
+    - raw = 65.2 - 20 - 10 = 35.2 -> ceil(35.2/5)*5 = 40 -> >= moq=15 -> 40
+    - order_quantity = 40 (small tier: 40 <= small_threshold=100)
+    """
+    cfg = ReplenishmentConfig(pack_size=5, moq=15)
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=[10.0, 12.0, 14.0, 16.0, 18.0, 20.0],
+        lead_time_days=4,
+        forecast_std=2.0,
+        inventory=_inv(current=20.0, open_pos=10.0),
+        config=cfg,
+    )
+    assert rec.lead_time_demand == pytest.approx(52.0)
+    assert rec.safety_stock == pytest.approx(6.6)
+    assert rec.reorder_point == pytest.approx(58.6)
+    assert rec.target_inventory == pytest.approx(65.2)
+    assert rec.order_quantity == 40.0
+    assert rec.approval_tier == "small"
+
+
+def test_compute_replenishment_no_order_when_inventory_sufficient() -> None:
+    """Inventory + POs already cover the target -> order=0, tier=auto."""
+    cfg = ReplenishmentConfig()
+    rec = compute_replenishment(
+        series_key="A",
+        forecast=[100.0, 100.0, 100.0, 100.0],  # lead_time_demand = 400
+        lead_time_days=4,
+        forecast_std=10.0,
+        inventory=_inv(current=500.0, open_pos=0.0),  # way above target
+        config=cfg,
+    )
+    assert rec.order_quantity == 0.0
+    assert rec.approval_tier == "auto"
+
+
+def test_compute_replenishment_is_deterministic() -> None:
+    """Same inputs -> same recommendation."""
+    forecast = [10.0, 12.0, 14.0, 16.0, 18.0, 20.0]
+    inv = _inv(current=20.0, open_pos=10.0)
+    cfg = ReplenishmentConfig(pack_size=5, moq=15)
+    rec1 = compute_replenishment(
+        series_key="A",
+        forecast=forecast,
+        lead_time_days=4,
+        forecast_std=2.0,
+        inventory=inv,
+        config=cfg,
+    )
+    rec2 = compute_replenishment(
+        series_key="A",
+        forecast=forecast,
+        lead_time_days=4,
+        forecast_std=2.0,
+        inventory=inv,
+        config=cfg,
+    )
+    assert rec1.order_quantity == rec2.order_quantity
+    assert rec1.reorder_point == rec2.reorder_point
+    assert rec1.approval_tier == rec2.approval_tier
