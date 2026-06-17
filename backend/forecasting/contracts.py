@@ -940,3 +940,166 @@ class ModelFailureReport(BaseModel):
 
 
 ForecastHarnessReport.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: UiPath Orchestration integration boundary
+# ---------------------------------------------------------------------------
+# Phase 6 draws the line between this repo and the UiPath Orchestrator
+# (the production approval + scheduling engine). The in-repo work is
+# strictly the typed boundary the UiPath project consumes; the UiPath
+# side (Studio workflows, Orchestrator Queues, Unattended Robot) lives
+# in a separate repository. Keeping these contracts pure Pydantic with
+# no I/O makes them easy to assert against in tests and impossible to
+# leak platform internals into UiPath assets.
+#
+# The naming follows the principle the rest of the platform uses:
+#   - "kind" is a closed Literal (the set the platform actually emits)
+#   - "status" is a closed Literal (the states a request / run can be in)
+#   - identifiers (request_id, trigger_id, run_id) are opaque strings
+#     the gateway hands back so callers don't conflate them with the
+#     platform's run_id. run_id is included explicitly so an audit
+#     record can join back to the platform's run.
+# ---------------------------------------------------------------------------
+
+
+# All seven approval kinds from the original Phase 6 plan. New kinds
+# must be added to this Literal; a closed set keeps the UiPath-side
+# Queue/Form mapping finite and reviewable.
+ApprovalKind = Literal[
+    "data_contract",                 # user signs off on the schema mapping
+    "risky_schema_semantics",        # user accepts ambiguous column meanings
+    "custom_code_permission",        # user grants the agent a code-escalation attempt
+    "unforecastable_grain_fallback", # user accepts a coarser grain for an unforecastable series
+    "official_forecast_publication", # user publishes a Foundry report
+    "replenishment_recommendation",  # user signs off on a replenishment batch
+    "erp_procurement_handoff",       # user releases the approved batch to ERP
+]
+
+ApprovalStatus = Literal["pending", "approved", "rejected"]
+ApprovalDecisionValue = Literal["APPROVE", "REJECT", "DEFER"]
+
+
+class ApprovalRequest(BaseModel):
+    """A request the platform raises when a decision needs a human.
+
+    The gateway (InProcess today, UiPath tomorrow) holds the request
+    until a human calls acknowledge() with a decision. ``run_id`` is
+    the platform's run; ``request_id`` is the gateway's local id.
+    """
+
+    request_id: str
+    run_id: str
+    kind: ApprovalKind
+    title: str
+    summary: str
+    payload: dict[str, object] = Field(default_factory=dict)
+    requested_by: str
+    requested_at: str  # ISO-8601 timestamp
+    status: ApprovalStatus = "pending"
+    # Once acknowledged, the decision and approver are recorded here.
+    decision: ApprovalDecisionValue | None = None
+    approver: str | None = None
+    decided_at: str | None = None
+    reason: str | None = None
+
+
+class ApprovalEvent(BaseModel):
+    """A single audit entry for the approval lifecycle.
+
+    Written to ``outputs/{run_id}/approvals.jsonl`` (one event per
+    state change). event_type is one of the four transitions the
+    gateway can produce: request raised, decision recorded, expiry,
+    or a status correction.
+    """
+
+    event_id: str
+    request_id: str
+    run_id: str
+    event_type: Literal["raised", "decided", "expired", "corrected"]
+    occurred_at: str
+    actor: str
+    notes: str = ""
+
+
+# All six scheduled job kinds from the original Phase 6 plan.
+ScheduledJobKind = Literal[
+    "data_refresh",
+    "validation",
+    "forecast_generation",
+    "review",
+    "monitoring",
+    "drift_investigation",
+]
+
+ScheduledJobStatus = Literal["queued", "running", "succeeded", "failed", "skipped", "awaiting_approval"]
+
+
+class ScheduledJobTrigger(BaseModel):
+    """A declarative trigger registered with the scheduler.
+
+    ``cron`` is a small expression the in-process scheduler evaluates
+    every tick (``"every 5m"``, ``"hourly"``, ``"daily 02:00"``).
+    The Scheduler is documented separately; the trigger carries just
+    the schedule shape, not the runner logic.
+    """
+
+    trigger_id: str
+    kind: ScheduledJobKind
+    cron: str
+    enabled: bool = True
+    # Optional run_id to resume a specific run; absent means create a new one.
+    run_id: str | None = None
+    # Free-form kwargs the runner understands for this kind (e.g.
+    # ``{"window_days": 90}`` for a drift_investigation).
+    params: dict[str, object] = Field(default_factory=dict)
+    created_at: str
+    created_by: str
+
+
+class ScheduledJobRun(BaseModel):
+    """The outcome of one tick of the scheduler for one trigger.
+
+    A trigger can fire many runs; each is logged for audit. ``status``
+    is the terminal-or-current state. ``awaiting_approval`` means the
+    run reached an ApprovalRequest and is parked until a human acts.
+    """
+
+    run_id: str
+    trigger_id: str
+    kind: ScheduledJobKind
+    started_at: str
+    finished_at: str | None = None
+    status: ScheduledJobStatus
+    result_payload: dict[str, object] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class ErpHandoffPayload(BaseModel):
+    """The package released to ERP/procurement after a successful approval.
+
+    Built only after the matching ``ApprovalRequest`` reaches
+    ``approved`` status; never built from a ``pending`` or
+    ``rejected`` request. ``recommendations`` is the batch of
+    ReplenishmentRecommendations approved for release. ``approval``
+    is the audit summary (request id, approver, reason, timestamp)
+    that ERP systems persist alongside the receiving transaction
+    so the chain of custody is reconstructable downstream.
+    """
+
+    handoff_id: str
+    run_id: str
+    released_at: str
+    approval_request_id: str
+    approver: str
+    approval_reason: str
+    approved_at: str
+    # Per-series recommendations released to ERP. Typed as a list of
+    # dicts (rather than importing ReplenishmentRecommendation
+    # directly) to keep the boundary free of internal contract
+    # coupling — UiPath does not need to know the platform's full
+    # recommendation shape, only the fields ERP needs (sku, location,
+    # quantity, unit, request_date).
+    recommendations: list[dict[str, object]] = Field(default_factory=list)
+    # A flat audit trail joining the request, decision, and release.
+    audit_trail: list[ApprovalEvent] = Field(default_factory=list)
