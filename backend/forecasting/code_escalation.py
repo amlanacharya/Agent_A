@@ -57,6 +57,20 @@ class FailureReport:
     recommended_next_action: str
 
 
+# ---------------------------------------------------------------------------
+# Why EscalationTracker is file-backed and survives restarts.
+# ---------------------------------------------------------------------------
+# A custom model family is a permanent addition to the registry - once
+# accepted, the next run will see it. The 3-attempt cap exists to bound
+# the LLM-driven trial-and-error *within* a run, but the attempt ledger
+# itself must persist across runs so a crashed session's attempts are
+# honoured when the human returns. The contrasting design lives in
+# ``config_escalation.py`` - a FeatureFlag flip is per-run only, so its
+# per-action counter stays in memory. If unified observability across
+# both paths is ever needed, the seam is an ``AttemptTracker`` Protocol.
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class EscalationTracker:
     run_id: str

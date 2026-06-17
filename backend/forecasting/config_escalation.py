@@ -380,6 +380,18 @@ def run_config_escalation(
     current_flags = starting_flags
     current_family: ModelFamilyName = starting_model_family  # type: ignore[assignment]
     current_mase = starting_mase
+    # ---------------------------------------------------------------------------
+    # Why the per-run attempt ledger is in-memory and not file-backed.
+    # ---------------------------------------------------------------------------
+    # A FeatureFlag flip is a per-run experiment - the next run starts from
+    # the saved champion config and re-decides every proposal afresh. There
+    # is nothing to "honour" across restarts; persisting the counter would
+    # leak yesterday's failed attempts into today's experiment. The
+    # contrasting design lives in ``code_escalation.py`` - custom model
+    # families are permanent, so its attempt ledger is file-backed. If
+    # unified observability is ever needed, the seam is an ``AttemptTracker``
+    # Protocol that both modules could implement.
+    # ---------------------------------------------------------------------------
     attempts: list[ConfigAttemptResult] = []
     history: list[float] = [starting_mase]
     stopped_reason: StopReason = "config_exhausted"

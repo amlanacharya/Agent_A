@@ -13,13 +13,13 @@ This issue adds a brief comment (3–5 lines) above each tracker explaining the 
 
 ## Acceptance criteria
 
-- [ ] A comment block of 3–5 lines sits directly above the `EscalationTracker` class in `code_escalation.py`, explaining why it is file-backed and survives restarts, and pointing at `config_escalation.py` for the contrasting design
-- [ ] A comment block of 3–5 lines sits directly above the per-action `Counter` in `config_escalation.py` (or whichever identifier holds the per-run attempt count), explaining why it is in-memory and per-run only, and pointing at `code_escalation.py` for the contrasting design
-- [ ] Each comment notes the option of extracting a shared `AttemptTracker` Protocol at a future time if unified observability is needed (a single sentence is enough)
-- [ ] A new test file `tests/test_escalation_tracker_docs.py` (or an addition to an existing tests file) imports both modules and asserts each comment's presence — the assertion is structural (substring on the module's source) so it survives reformatting
-- [ ] `uv run pytest -q` is green; full suite remains at ~651 passing + 1 new doc-assertion test = ~652
-- [ ] One commit on `main` with message `feat: refactor cb3 - document intentional code-vs-config escalation tracker distinction`
-- [ ] Commit is pushed
+- [x] A comment block of 3–5 lines sits directly above the `EscalationTracker` class in `code_escalation.py`, explaining why it is file-backed and survives restarts, and pointing at `config_escalation.py` for the contrasting design
+- [x] A comment block of 3–5 lines sits directly above the per-action `Counter` in `config_escalation.py` (or whichever identifier holds the per-run attempt count), explaining why it is in-memory and per-run only, and pointing at `code_escalation.py` for the contrasting design
+- [x] Each comment notes the option of extracting a shared `AttemptTracker` Protocol at a future time if unified observability is needed (a single sentence is enough)
+- [x] A new test file `tests/test_escalation_tracker_docs.py` (or an addition to an existing tests file) imports both modules and asserts each comment's presence — the assertion is structural (substring on the module's source) so it survives reformatting
+- [x] `uv run pytest -q` is green; full suite remains at ~651 passing + 1 new doc-assertion test = ~652
+- [x] One commit on `main` with message `feat: refactor cb3 - document intentional code-vs-config escalation tracker distinction`
+- [x] Commit is pushed
 
 ## Blocked by
 
