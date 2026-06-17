@@ -35,6 +35,10 @@ _Avoid_: Series ID, series identifier, SKU key
 A per-series outcome assigned by the end of a Run. One of three values: `forecastable` (sufficient history, Foundry found a model meeting the MASE target), `caution` (modellable but carries known risk — e.g., marginal history, high CV², or an ACCEPTED_RISK Claim; can be flagged pre-modelling by Meridian or Forge, or post-modelling when Foundry falls short of target without hitting the unforecastable floor), `unforecastable` (Foundry exhausted all self-correction rounds and `assess_target_feasibility` confirmed the theoretical floor exceeds the target).
 _Avoid_: Forecastable flag, series status, model outcome
 
+**Escalation Path**:
+A controlled way the system improves a forecast beyond the standard tools when the target is not met. Two paths, distinct in cost, risk, and audit surface, both bounded. **Config escalation** flips `FeatureFlag`s, swaps model families, or tunes parameters within existing models; no human approval, no new code, governed by a marginal-gain keep/kill test and a per-Run attempt cap. **Code escalation** adds a new feature family (`feature_families/`) or a new model family (`forecasting_models.py`); requires human "custom code permission" approval, capped at three attempts per layer per Run, every successful addition ships with tests and a markdown card. Config escalation is tried first; code escalation runs only when config escalation is exhausted without hitting target.
+_Avoid_: Just "escalation", "agent fix", "auto-fix"
+
 **Demand Class**:
 A per-series classification (`SMOOTH`, `ERRATIC`, `INTERMITTENT`, `LUMPY`) derived from the Syntetos-Boylan matrix using ADI and CV². Assigned by Forge during EDA. Gates which models Foundry may use for that series. In a Scenario Run, re-evaluated for affected series if the scenario override materially changes demand pattern (e.g., injecting a stockout or promo event).
 _Avoid_: Demand type, demand category, series type

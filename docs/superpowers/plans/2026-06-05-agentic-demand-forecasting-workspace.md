@@ -148,6 +148,31 @@ Reason: this product will fail if the harness is not trustworthy. The cockpit ma
 > ✅ **Phase 4 complete.** Governed model families in `forecasting_models.py`; ensemble tracking in `ensemble.py`; custom-family escalation in `model_escalation.py`; the harness in `forecast_harness.py` ties them together and returns a `ForecastHarnessReport` with scorecards, robustness checks, and the ensemble summary. New contracts in `contracts.py`: `ModelFamilyName`, `ModelScorecard`, `RobustnessCheck`, `ForecastRequest`, `ForecastHarnessReport`, `EnsembleSummary`, `ModelFailureReport`. Tests: 83 new across `test_forecasting_models.py` (24), `test_ensemble.py` (17), `test_model_escalation.py` (27), `test_forecast_harness.py` (15); full suite 299 passing. Dependencies added: `xgboost>=3.2.0`, `scikit-learn>=1.5.0`.
 >
 > 🧹 **Phase 4 simplified (2026-06-14).** `/simplify` pass across all four phase 4 modules: removed dead `total == 0` branch in `EnsembleTracker.weights_for_segment`; tightened floor loop bound from `len(active)+1` to `len(PROTECTED_FAMILIES)+1`; merged two-pass `summarise_scorecards` into one; moved inference fit outside the per-fold cutoff loop (was re-fitting full history once per fold); pre-computed `lag_1`/`lag_2`/`rolling_mean_4` column indices before the XGBoost horizon loop; cached `history.dropna()` in `AggregateAllocateModel._fit_series`; replaced `_decode_xgboost_model`'s direct `from xgboost import` with the already-passed module parameter; replaced hand-rolled `_median` with `statistics.median`; collapsed `_series_keys_in_order` to `list(dict.fromkeys(...))`; removed `hasattr` guard on monkey-patch; cleaned up `__all__` across all four modules (removed duplicates, private symbols, and non-public imports). Full suite 299 passing.
+>
+> **Follow-up (2026-06-17, resolved by grill session).** Two distinct escalation paths, not one. Config escalation flips `FeatureFlag`s, swaps existing model families, or tunes parameters within them — no human approval, no new code, governed by a marginal-gain keep/kill test and a per-Run attempt cap. Code escalation adds a new feature family (`feature_families/`) or a new model family (`forecasting_models.py`); human "custom code permission" approval, capped at three attempts per layer per Run, every successful addition ships with tests and a markdown card. Config escalation is tried first; code escalation runs only when config escalation is exhausted. New term `Escalation Path` added to `CONTEXT.MD` glossary. The agent's only judgement call is the candidate list (the `propose_feature_changes` tool, an LLM call inside `foundry_modelling`); the harness executes, keeps/kills, and stops. The proposal's findings are `Claim`s with `evidence_type=pattern`; on success the Claim is verifier-promoted to a markdown card in `LEARNINGS.md` (Phase 1 rule) and reused on subsequent Runs. Implementation tasks added below.
+
+### Phase 4.1: Two-Path Escalation + Proposal Tool
+
+The Phase 4 self-correction loop (model-class changes within a family) is **not** the same as the principal-DS loop sketched in the plan review (residual decomposition → candidate list → try fixes one at a time → keep/kill on marginal gain). That loop was always implicit in the plan's "feature engineering" and "forecasting code" bullets; Phase 4.1 makes it explicit and bounded.
+
+- [ ] Add the `propose_feature_changes` tool to the Foundry agent:
+  - takes the post-baseline scorecards + residual decomp as input
+  - returns a typed `Proposal[]` with `kind: "config" | "code"`, `action`, `target` (series or segment), `expected_delta`, `evidence` (Claim)
+  - config proposals first, code proposals only if config round is exhausted without hitting target
+- [ ] Add the `decompose_residuals` tool — backs the proposal with evidence (`Claim` with `evidence_type=pattern`)
+- [ ] Add the config-escalation loop in `foundry_modelling`:
+  - iterate `Proposal[]`, apply one config proposal at a time
+  - keep/kill on marginal MASE gain (threshold from `.env`, default 0.02)
+  - per-knob-type attempt cap (default 3 per Run)
+  - stops when target is hit, marginal gain is below threshold for 2 consecutive attempts, or the cap is reached
+- [ ] Add the marginal-gain stop condition as a first-class concept (`.env`-configurable threshold, applies to both config and code rounds in self-correction)
+- [ ] Add card lifecycle rules to `learning_workspace.py`:
+  - `runs_validated >= 2` for a card to be active
+  - card retires after 2 consecutive MASE regressions when applied
+  - card retires at `card_max_age` (`.env`, default 90 days)
+  - retired cards stay in `LEARNINGS.md` for the audit trail
+- [ ] Tests for the proposal tool, the config loop, the stop condition, and the card lifecycle
+- [ ] Update `MODEL_REGISTRY.md` template to record which `Proposal[]` produced each model
 
 ### Phase 5: Evaluation, Promotion, And Replenishment Policy
 
@@ -289,6 +314,7 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 | 2: Data Intake, EDA, Canonical Contract | ✅ Complete | `eda_probes.py` (6 new sub-checks) wired into `build_eda_report`; canonical schema + escalation unchanged. 200 tests pass. |
 | 3: Feature Factory | ✅ Complete | All 8 families implemented in `feature_factory.py` (4 new: stockout/availability, hierarchy, lifecycle/cold-start, intermittency). Fold-aware band logic factored into `_iter_fold_bands()`. 16 new tests; 216 total pass. |
 | 4: Forecasting Harness | ✅ Complete | 6 governed model families + ensemble + custom-family escalation. `forecasting_models.py`, `ensemble.py`, `model_escalation.py`, `forecast_harness.py`. New contracts: `ModelFamilyName`, `ModelScorecard`, `RobustnessCheck`, `ForecastRequest`, `ForecastHarnessReport`, `EnsembleSummary`, `ModelFailureReport`. 83 new tests; 299 total pass. |
+| 4.1: Two-Path Escalation + Proposal Tool | ❌ Not started | `propose_feature_changes` + `decompose_residuals` tools; config-escalation loop in `foundry_modelling`; marginal-gain stop condition; card lifecycle in `learning_workspace`. Resolved 2026-06-17 — `Escalation Path` term in `CONTEXT.MD`. |
 | 5: Evaluation, Promotion, Replenishment | ❌ Not started | |
 | 6: UiPath Orchestration | ❌ Not started | |
 | 7: Monitoring & Augmented MLOps | ❌ Not started | |
