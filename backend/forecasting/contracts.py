@@ -591,6 +591,20 @@ class ForecastRequest(BaseModel):
     # (run all families, let the scorecard pick).
     segment_sb_class: dict[str, SBClass] = Field(default_factory=dict)
 
+    def mase_target_for(self, series_key: str) -> float:
+        """Return the MASE target a series must beat to be ``forecastable``.
+
+        The default is 1.0 — beating the naive baseline by construction.
+        Per-series overrides (set during Meridian scoping as Claims) are
+        out of scope for Phase 4 and will be wired in here when the
+        per-series MASE Claim lands.
+
+        Defined as a regular method on the model (not monkey-patched at
+        import time) so the policy is visible at the declaration site
+        and the Pydantic v2 model surface stays self-contained.
+        """
+        return 1.0
+
 
 # The harness's unified output. ``series_results`` is a flat list of
 # per-series best-model picks; ``scorecards`` keeps the full backtest

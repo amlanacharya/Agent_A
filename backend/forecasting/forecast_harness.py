@@ -22,11 +22,9 @@ makes Phase 5 a pure "consume the report" task.
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict
 from typing import Iterable, Sequence
 
-import numpy as np
 import pandas as pd
 
 from forecasting.contracts import (
@@ -45,6 +43,7 @@ from forecasting.ensemble import (
     summarise_scorecards,
 )
 from forecasting.forecasting_models import (
+    FamilyResources,
     ForecastingModel,
     ForecastingModelError,
     build_model,
@@ -52,10 +51,10 @@ from forecasting.forecasting_models import (
     list_model_families,
 )
 from forecasting.model_escalation import (
-    check_data_contract,
     check_review,
     check_robustness,
 )
+from forecasting.backtest import backtest_one_fold
 
 
 # ---------------------------------------------------------------------------
@@ -121,14 +120,14 @@ def run_forecast_harness(
             try:
                 model = build_model(
                     family,
-                    parent_features=parent_for_series,
+                    resources=FamilyResources(parent_features=parent_for_series),
                 )
             except ForecastingModelError:
                 failed_families[series_key].add(family)
                 continue
 
             for cutoff in parsed_cutoffs:
-                scorecard = _backtest_one_fold(
+                result = backtest_one_fold(
                     model=model,
                     family=family,
                     series_key=series_key,
@@ -137,8 +136,20 @@ def run_forecast_harness(
                     cutoff=cutoff,
                     horizon=request.horizon,
                 )
-                if scorecard is None:
+                if result.failure is not None:
+                    # The backtest module tells us WHY this fold
+                    # failed. The harness only drops the family for
+                    # recoverable failures (insufficient history,
+                    # data-contract violation); non-recoverable
+                    # failures (model raised on fit / predict) are
+                    # surfaced on the report and the model
+                    # escalation layer can read them when it gates
+                    # promotion.
+                    if result.failure.recoverable:
+                        failed_families[series_key].add(family)
                     continue
+                scorecard = result.scorecard
+                assert scorecard is not None  # invariant: failure is None → scorecard is set
                 families_with_scorecards.add(family)
                 scorecards.append(scorecard)
                 per_family_metrics[family] = scorecard  # last fold wins; the harness keeps the most recent
@@ -148,9 +159,13 @@ def run_forecast_harness(
                 failed_families[series_key].add(family)
                 continue
             # Inference fit runs once on the full history, after all folds.
-            inference_state = _safe_fit(model, history=series_history, features=series_features)
+            # The backtest module owns the typed-failure story; for
+            # inference we just need "did fit / predict succeed" — a
+            # non-recoverable failure here means we skip the family
+            # for this series and let the scorecard pick the winner.
+            inference_state = _safe_inference_fit(model, history=series_history, features=series_features)
             if inference_state is not None:
-                forecast = _safe_predict(model, inference_state, horizon=request.horizon)
+                forecast = _safe_inference_predict(model, inference_state, horizon=request.horizon)
                 if forecast is not None:
                     per_family_forecasts[family] = forecast
 
@@ -330,84 +345,26 @@ def _candidate_families_for(
     return [family for family in candidates if family not in segment_failures]
 
 
-def _backtest_one_fold(
-    *,
-    model: ForecastingModel,
-    family: ModelFamilyName,
-    series_key: str,
-    history: pd.Series,
-    features: pd.DataFrame,
-    cutoff: pd.Timestamp,
-    horizon: int,
-) -> ModelScorecard | None:
-    """Backtest one model on one (series, fold) pair.
+def _safe_inference_fit(model: ForecastingModel, *, history: pd.Series, features: pd.DataFrame):
+    """Fit on the full history for inference; swallow model errors.
 
-    The fold's training history is ``history[history.index <= cutoff]``;
-    the actuals are the next ``horizon`` observations strictly after
-    the cutoff. Returns ``None`` if there are not enough rows to
-    fit or to score.
+    Unlike :func:`backtest.backtest_one_fold` the inference path has
+    no cutoff / actuals, so the typed-failure story is overkill — we
+    just need "did fit succeed?" and let the harness skip the family
+    on failure.
     """
-    in_sample_mask = history.index <= cutoff
-    in_sample = history[in_sample_mask].dropna()
-    actuals = history[(history.index > cutoff)].head(horizon).dropna()
-    if in_sample.empty or len(actuals) < horizon:
-        return None
-    in_sample_features = features[features["date"] <= cutoff].reset_index(drop=True) if not features.empty else features
-    try:
-        state = model.fit(in_sample, series_key=series_key, features=in_sample_features)
-    except ForecastingModelError:
-        return None
-    try:
-        forecast = model.predict(state, horizon=horizon)
-    except ForecastingModelError:
-        return None
-
-    # The data-contract check runs first - it is the cheapest gate
-    # and the only one that catches degenerate forecasts (NaN,
-    # wrong length, infinity). The other gates live in
-    # ``model_escalation`` and are run on the final report.
-    data_check = check_data_contract(forecast=forecast, actual=actuals.tolist(), horizon=horizon)
-    if not data_check.passed:
-        return None
-
-    forecast_arr = np.asarray(forecast, dtype=float)
-    actual_arr = np.asarray(actuals, dtype=float)
-    errors = actual_arr - forecast_arr
-    mae = float(np.mean(np.abs(errors)))
-    rmse = float(np.sqrt(np.mean(errors ** 2)))
-    bias = float(np.mean(errors))
-    naive_mae = _naive_mae(in_sample)
-    mase = float("nan") if naive_mae == 0 or math.isnan(naive_mae) else mae / naive_mae
-
-    return ModelScorecard(
-        model_family=family,
-        series_key=series_key,
-        fold_cutoff=cutoff.isoformat(),
-        horizon=horizon,
-        forecast=[float(v) for v in forecast_arr],
-        actual=[float(v) for v in actual_arr],
-        mae=mae,
-        rmse=rmse,
-        mase=mase,
-        bias=bias,
-    )
-
-
-def _naive_mae(history: pd.Series) -> float:
-    if len(history) < 2:
-        return float("nan")
-    naive_errors = (history.iloc[1:] - history.shift(1).iloc[1:]).abs()
-    return float(naive_errors.mean())
-
-
-def _safe_fit(model: ForecastingModel, *, history: pd.Series, features: pd.DataFrame):
     try:
         return model.fit(history, series_key=str(history.name or "series"), features=features)
     except ForecastingModelError:
         return None
 
 
-def _safe_predict(model: ForecastingModel, state, *, horizon: int) -> list[float] | None:
+def _safe_inference_predict(model: ForecastingModel, state, *, horizon: int) -> list[float] | None:
+    """Predict from a fitted state; swallow model errors.
+
+    Pair to :func:`_safe_inference_fit`. Returns ``None`` when the
+    model raised.
+    """
     try:
         return model.predict(state, horizon=horizon)
     except ForecastingModelError:
@@ -482,17 +439,7 @@ __all__ = [
 ]
 
 
-# --- ForecastRequest.mase_target_for ----------------------------------
-# Defined here (rather than in contracts.py) so the request model
-# stays pure data and the harness owns the policy. The default
-# target is 1.0 (beating the naive baseline by definition - MASE
-# <= 1 means the candidate is at least as good as naive).
-def _default_mase_target() -> float:
-    return 1.0
-
-
-def _mase_target_for(self, series_key: str) -> float:
-    return _default_mase_target()
-
-
-ForecastRequest.mase_target_for = _mase_target_for  # type: ignore[attr-defined]
+# ``ForecastRequest.mase_target_for`` is defined in ``contracts.py`` as
+# a real Pydantic method (the request model owns the policy; the
+# harness just consumes it). See the import block at the top of this
+# file.

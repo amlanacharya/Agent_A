@@ -21,6 +21,7 @@ from forecasting.contracts import (
     TrendStats,
     ZeroRunStats,
 )
+from forecasting.stats_utils import autocorr
 
 
 def compute_adi_cv2_per_series(series_map: dict[str, pd.DataFrame]) -> dict[str, AdiCv2Stats]:
@@ -94,7 +95,7 @@ def detect_seasonality_strength(series_map: dict[str, pd.DataFrame]) -> dict[str
         best_str, best_per = 0.0, None
         for lag in [52, 12, 4]:
             if len(demand) > lag * 2:
-                ac = _autocorr(demand, lag)
+                ac = autocorr(demand, lag)
                 if ac > best_str:
                     best_str, best_per = ac, lag
         result[key] = SeasonalityStats(
@@ -312,12 +313,6 @@ def _max_run(mask: np.ndarray) -> int:
         cur = cur + 1 if v else 0
         best = max(best, cur)
     return best
-
-
-def _autocorr(x: np.ndarray, lag: int) -> float:
-    xn = x - x.mean()
-    denom = np.dot(xn, xn)
-    return float(np.dot(xn[: len(x) - lag], xn[lag:])) / denom if denom else 0.0
 
 
 def _extract_numeric_demand(

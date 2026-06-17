@@ -23,6 +23,18 @@ CANONICAL_COLUMNS = (
 
 OPTIONAL_NUMERIC_COLUMNS = ("inventory_qty", "price", "lead_time")
 MODEL_ALIAS_COLUMNS = ("series_key", "date", "demand", "promo")
+# The set of canonical columns the contract requires to be non-null.
+# Exported so the EDA probes (and any other consumer that needs to
+# distinguish "required" from "optional" columns) share the same
+# source of truth as the canonical validator below. Adding a new
+# required column is one edit here — both the validation and the
+# probe ``rows_with_missing`` metric pick it up.
+CANONICAL_REQUIRED_NON_NULL_COLUMNS: tuple[str, ...] = (
+    "sku_id",
+    "location_id",
+    "week_start",
+    "demand_qty",
+)
 
 
 @dataclass(frozen=True)

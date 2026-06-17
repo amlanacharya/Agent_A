@@ -20,33 +20,36 @@ Probes are pure (no I/O, no side effects, no escalation). The toolbox is
 the only layer that talks to ``EscalationTracker`` — it observes probe
 results and decides whether to escalate.
 
-Known follow-up duplications (intentional, deferred from the Phase 2
-refactor review — see the 7-change list in the Phase 2 completion log):
+The Phase 2 follow-up review called out three known duplications with
+``forecasting.tools.preflight_stats``. The first two are now resolved
+via the shared helpers in :mod:`forecasting.stats_utils`:
 
-* ``_autocorr`` here mirrors ``forecasting.tools.preflight_stats._autocorr``.
-  Extracting a shared helper would require a new public util module and
-  is out of scope for the Phase 2 EDA sub-checks.
-* The boolean-string set ``{"true", "false", "yes", "no", "y", "n", "1",
-  "0"}`` in ``_label_for_series`` is also accepted by
-  ``forecasting.canonical_data._optional_flag`` / ``_validate_flag``. A
-  canonical export from ``canonical_data`` would let both layers share
-  it.
-* ``_REQUIRED_NON_NULL_COLUMNS`` is built from names already exported by
-  ``forecasting.canonical_data`` (``CANONICAL_COLUMNS`` +
-  ``MODEL_ALIAS_COLUMNS``); the tuple is inlined here to avoid a
-  circular import through ``contracts`` until ``canonical_data`` grows a
-  dedicated export.
-* ``run_all_probes`` is a test convenience aggregator. ``build_eda_report``
-  is the production orchestrator; ``run_all_probes`` has no callers
-  today and is a candidate for removal if/when the test suite drops its
-  few uses.
+* :func:`forecasting.stats_utils.autocorr` is the one
+  Pearson-correlation helper — both ``eda_probes`` and
+  ``preflight_stats`` import it.
+* :data:`forecasting.stats_utils.BOOLEAN_FLAG_TEXT` is the one
+  boolean-looking string vocabulary; both the canonical layer and the
+  probes agree on the same set.
+
+The third — ``_REQUIRED_NON_NULL_COLUMNS`` — is now sourced from
+:data:`forecasting.canonical_data.CANONICAL_REQUIRED_NON_NULL_COLUMNS`
+plus the model-alias columns the harness needs, so the canonical
+contract's "required" set is the single source of truth.
+
+``run_all_probes`` is still here as a test convenience aggregator.
+``build_eda_report`` is the production orchestrator;
+``run_all_probes`` has no callers in the production path and is a
+candidate for removal if/when the test suite drops its few uses.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from forecasting.canonical_data import CANONICAL_COLUMNS, OPTIONAL_NUMERIC_COLUMNS
+from forecasting.canonical_data import (
+    CANONICAL_REQUIRED_NON_NULL_COLUMNS,
+    OPTIONAL_NUMERIC_COLUMNS,
+)
 from forecasting.contracts import (
     ColumnTypeInference,
     DateGapsReport,
@@ -61,6 +64,7 @@ from forecasting.contracts import (
     SeriesLeakageStats,
     TypeDetectionReport,
 )
+from forecasting.stats_utils import BOOLEAN_FLAG_TEXT, autocorr
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +169,7 @@ def _label_for_series(non_null: pd.Series) -> InferredColumnType:
     # is nothing but those, label it boolean — the user almost certainly
     # means it as one.
     text = non_null.astype("string").str.strip().str.lower()
-    if text.isin({"true", "false", "yes", "no", "y", "n", "1", "0"}).all():
+    if text.isin(BOOLEAN_FLAG_TEXT).all():
         return "boolean"
 
     return "string"
@@ -193,11 +197,14 @@ def _is_integer_like(values: pd.Series) -> bool:
 # layer rejects inputs that violate this, so a non-zero missing fraction
 # here means someone constructed a canonical table by hand (e.g. tests).
 # We still report it — the EDA report is observational, not gating.
+#
+# Sourced from :data:`forecasting.canonical_data.CANONICAL_REQUIRED_NON_NULL_COLUMNS`
+# (the same tuple the canonical validator uses) plus the model-alias
+# columns the harness also expects to be populated. The single source
+# of truth for the "required" set means adding a new required column
+# is one edit in ``canonical_data``.
 _REQUIRED_NON_NULL_COLUMNS: tuple[str, ...] = (
-    "sku_id",
-    "location_id",
-    "week_start",
-    "demand_qty",
+    *CANONICAL_REQUIRED_NON_NULL_COLUMNS,
     "series_key",
     "date",
     "demand",
@@ -462,7 +469,7 @@ def _leakage_stats_for_series(key: str, df: pd.DataFrame) -> SeriesLeakageStats:
     if len(clean) > _MAX_FORWARD_LAG:
         for lag in _FORWARD_LAGS:
             if len(clean) > lag:
-                c = _autocorr(clean, lag)
+                c = autocorr(clean, lag)
                 if abs(c) > abs(max_corr):
                     max_corr = c
 
@@ -477,23 +484,6 @@ def _leakage_stats_for_series(key: str, df: pd.DataFrame) -> SeriesLeakageStats:
         forward_correlation_max=round(max_corr, 4),
         demand_equals_inventory_rows=deq,
     )
-
-
-def _autocorr(x: np.ndarray, lag: int) -> float:
-    """Pearson correlation between ``x[:-lag]`` and ``x[lag:]``.
-
-    Mirrors the helper in ``preflight_stats`` — duplicated here so this
-    module stays self-contained and testable. Returns 0.0 on degenerate
-    input (constant series, lag >= length) rather than NaN so the report
-    stays serialisable.
-    """
-    if lag <= 0 or lag >= len(x):
-        return 0.0
-    a = x[:-lag]
-    b = x[lag:]
-    if a.std() == 0 or b.std() == 0:
-        return 0.0
-    return float(np.corrcoef(a, b)[0, 1])
 
 
 # ---------------------------------------------------------------------------

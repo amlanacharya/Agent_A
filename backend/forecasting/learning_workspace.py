@@ -6,7 +6,7 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
-from forecasting.run_state import HaltedRunError, Phase, load_run_state, run_dir
+from forecasting.run_state import HaltedRunError, Phase, legal_next_phases, load_run_state, run_dir
 
 MemoryLayer = Literal["global", "customer", "project"]
 LearningTier = Literal["auto", "verifier", "human"]
@@ -90,8 +90,16 @@ def promote_learning(workspace: RunWorkspace, entry: LearningEntry) -> None:
 
 
 def _assert_mutable_run(run_id: str) -> None:
+    """Reject writes to a HALTED Run.
+
+    The "is this Run mutable?" question is now a one-liner over the
+    state machine: a Run is mutable iff it has at least one legal
+    successor phase. HALTED has none, so this is the same check the
+    HALTED guard in ``save_run_state`` performs, just expressed
+    against the same data structure the conductor uses.
+    """
     state = load_run_state(run_id)
-    if state.phase == Phase.HALTED:
+    if not legal_next_phases(state.phase):
         raise HaltedRunError(run_id)
 
 

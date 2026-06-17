@@ -19,6 +19,7 @@ from forecasting.forecasting_models import (
     AggregateAllocateModel,
     CrostonModel,
     ExponentialSmoothingModel,
+    FamilyResources,
     ForecastingModelError,
     FittedState,
     MovingAverageModel,
@@ -155,9 +156,9 @@ def test_aggregate_allocate_uses_parent_share() -> None:
 def test_build_model_constructs_every_registered_family() -> None:
     for family in list_model_families():
         if family == "aggregate_allocate":
-            model = build_model(family, parent_features=pd.DataFrame({"demand": [1.0]}))
+            model = build_model(family, resources=FamilyResources(parent_features=pd.DataFrame({"demand": [1.0]})))
         else:
-            model = build_model(family)  # type: ignore[arg-type]
+            model = build_model(family)
         assert model.family == family
 
 
@@ -270,3 +271,47 @@ def test_aggregate_allocate_rejects_missing_parent_features() -> None:
     model = AggregateAllocateModel(parent_features=None)
     with pytest.raises(ForecastingModelError, match="parent_features"):
         model.fit(_weekly_history([1, 2, 3]), series_key="A")
+
+
+# ---------------------------------------------------------------------------
+# FamilyResources / XGBoost persistence
+# ---------------------------------------------------------------------------
+
+
+def test_family_resources_defaults_to_empty_bag() -> None:
+    """The default FamilyResources is usable: build_model picks
+    parent_features=None for aggregate_allocate and works for everyone else."""
+    model = build_model("naive", resources=FamilyResources())
+    assert model.family == "naive"
+    model = build_model(
+        "aggregate_allocate", resources=FamilyResources()
+    )
+    with pytest.raises(ForecastingModelError, match="parent_features"):
+        # The default bag has no parent_features -> the model fails
+        # at fit time with a clear message, not at construction.
+        model.fit(_weekly_history([1, 2, 3]), series_key="A")
+
+
+def test_xgboost_persistence_roundtrips_through_json() -> None:
+    """The encode/decode helpers in xgboost_persistence survive a
+    JSON round-trip — the model produces the same forecast before and
+    after. This is the contract the harness relies on for run-state
+    persistence."""
+    import json
+    pytest.importorskip("xgboost")
+    from forecasting.xgboost_persistence import decode_xgboost_model, encode_xgboost_model
+
+    import xgboost  # type: ignore
+
+    raw = [10.0, 12.0, 14.0, 16.0, 18.0]
+    x = [[v] for v in raw]
+    y = [v + 0.5 for v in raw]
+    booster_model = xgboost.XGBRegressor(n_estimators=10, max_depth=2)
+    booster_model.fit(x, y)
+    encoded = encode_xgboost_model(booster_model)
+    # JSON round-trip
+    round_tripped = json.loads(json.dumps(encoded))
+    decoded = decode_xgboost_model(xgboost, round_tripped)
+    assert decoded.predict([[10.0]])[0] == pytest.approx(
+        booster_model.predict([[10.0]])[0]
+    )

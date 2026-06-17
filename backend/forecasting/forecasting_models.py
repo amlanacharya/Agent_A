@@ -29,28 +29,62 @@ flexible:
 - ``xgboost_global`` - gradient-boosted trees over the canonical
   feature table, fit per series using the lag / rolling / promo
   features produced by the Feature Factory. This is the "global
-  ML" family.
+  ML" family. Its persistence (JSON encoding / decoding) and the
+  recursive-forecast loop live in
+  :mod:`forecasting.xgboost_persistence`; only the ``fit`` /
+  ``predict`` contract lives here.
 - ``aggregate_allocate`` - top-down fallback that forecasts the
   parent grain (sum across all series in a parent key) and allocates
   back to the children in proportion to their last observed share.
   Used as a safety net when per-series data is too short to fit
-  anything else.
+  anything else. It is the only family that needs construction-time
+  resources (``parent_features``); it picks what it needs from the
+  :class:`FamilyResources` bag and ignores the rest.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Any, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Callable, Sequence
 
 import numpy as np
 import pandas as pd
 
 from forecasting.contracts import ModelFamilyName
+from forecasting.xgboost_persistence import (
+    decode_xgboost_model,
+    encode_xgboost_model,
+    recursive_forecast,
+)
 
 
 class ForecastingModelError(ValueError):
     """Raised when a model family cannot be fit or cannot predict."""
+
+
+# ---------------------------------------------------------------------------
+# Family resources
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FamilyResources:
+    """Typed bag the harness assembles per (series, family) pair.
+
+    Adding a new resource field is one line here and the consuming
+    family reads it; no new keyword on ``build_model``. Families that
+    do not need a given resource simply ignore it.
+    """
+
+    # Top-down parent-grain history (sum across children of a parent
+    # key on each date). Populated by the harness when
+    # ``aggregate_allocate`` is in scope; ``None`` otherwise.
+    parent_features: pd.DataFrame | None = None
+    # Extra per-family resources live here as an open dict so the
+    # bag stays a single, named object. The harness fills in
+    # whatever it has; families pick what they need.
+    extras: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +465,7 @@ class XGBoostGlobalModel(ForecastingModel):
         )
         model.fit(x, y)
         return {
-            "model": _encode_xgboost_model(model),
+            "model": encode_xgboost_model(model),
             "feature_cols": list(feature_cols),
             # Last feature row is the most recent observation; we
             # will use it to roll a horizon-length forecast by
@@ -446,31 +480,13 @@ class XGBoostGlobalModel(ForecastingModel):
         xgboost = _import_xgboost()
         if xgboost is None:
             raise ForecastingModelError("xgboost is not installed")
-        model = _decode_xgboost_model(xgboost, payload["model"])
-        current = list(payload["last_x"])
-        feature_cols = list(payload["feature_cols"])
-        idx_lag_1 = feature_cols.index("lag_1") if "lag_1" in feature_cols else None
-        idx_lag_2 = feature_cols.index("lag_2") if "lag_2" in feature_cols else None
-        idx_roll = feature_cols.index("rolling_mean_4") if "rolling_mean_4" in feature_cols else None
-        forecasts: list[float] = []
-        for _ in range(horizon):
-            prediction = float(model.predict(np.array([current], dtype=float))[0])
-            forecasts.append(max(0.0, prediction))
-            # The lag / rolling features in ``feature_cols`` are
-            # produced by the Feature Factory in the order:
-            # ``lag_1, lag_2, rolling_mean_4``. The recursive
-            # forecast rolls the prediction into ``lag_1`` and
-            # re-derives the others as a simple average. This is
-            # deliberately naive — Phase 5 will refine with proper
-            # backtest gates.
-            if idx_lag_1 is not None:
-                current[idx_lag_1] = forecasts[-1]
-            if idx_lag_2 is not None:
-                current[idx_lag_2] = forecasts[-2] if len(forecasts) >= 2 else forecasts[-1]
-            if idx_roll is not None:
-                recent = forecasts[-min(4, len(forecasts)):]
-                current[idx_roll] = float(np.mean(recent)) if recent else 0.0
-        return forecasts
+        model = decode_xgboost_model(xgboost, payload["model"])
+        return recursive_forecast(
+            model=model,
+            last_x=payload["last_x"],
+            feature_cols=payload["feature_cols"],
+            horizon=horizon,
+        )
 
 
 def _import_xgboost():
@@ -479,20 +495,6 @@ def _import_xgboost():
     except ImportError:
         return None
     return xgboost
-
-
-def _encode_xgboost_model(model: Any) -> str:
-    """JSON-encode an XGBoost model so it round-trips through a Pydantic payload."""
-    booster = model.get_booster() if hasattr(model, "get_booster") else model
-    return booster.save_raw().decode("latin-1")
-
-
-def _decode_xgboost_model(xgboost: Any, raw: str):
-    booster = xgboost.Booster()
-    booster.load_model(bytearray(raw.encode("latin-1")))
-    wrapper = xgboost.XGBRegressor()
-    wrapper._Booster = booster
-    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -561,16 +563,50 @@ class AggregateAllocateModel(ForecastingModel):
 # ---------------------------------------------------------------------------
 
 
-_MODEL_REGISTRY: dict[ModelFamilyName, type[ForecastingModel]] = {
-    "naive": NaiveModel,
-    "seasonal_naive": SeasonalNaiveModel,
-    "moving_average": MovingAverageModel,
-    "exponential_smoothing": ExponentialSmoothingModel,
-    "croston": CrostonModel,
-    "xgboost_global": XGBoostGlobalModel,
-    # ``aggregate_allocate`` is constructed with a parent-features
-    # argument and lives outside the simple registry. See
-    # ``build_model``.
+# The canonical, ordered registry. Each entry is a small factory
+# function that takes a ``FamilyResources`` bag and returns a
+# ``ForecastingModel`` instance. The factory IS the source of truth for
+# which resources each family consumes; ``build_model`` is a thin
+# dispatcher that calls the right factory. Adding a new family is one
+# entry here and a class above; no edits to ``build_model`` and no
+# special cases for "this family needs X at construction time" — it
+# just picks what it needs from the bag and ignores the rest.
+def _make_naive(_resources: FamilyResources) -> ForecastingModel:
+    return NaiveModel()
+
+
+def _make_seasonal_naive(_resources: FamilyResources) -> ForecastingModel:
+    return SeasonalNaiveModel()
+
+
+def _make_moving_average(_resources: FamilyResources) -> ForecastingModel:
+    return MovingAverageModel()
+
+
+def _make_exponential_smoothing(_resources: FamilyResources) -> ForecastingModel:
+    return ExponentialSmoothingModel()
+
+
+def _make_croston(_resources: FamilyResources) -> ForecastingModel:
+    return CrostonModel()
+
+
+def _make_xgboost_global(_resources: FamilyResources) -> ForecastingModel:
+    return XGBoostGlobalModel()
+
+
+def _make_aggregate_allocate(resources: FamilyResources) -> ForecastingModel:
+    return AggregateAllocateModel(parent_features=resources.parent_features)
+
+
+_MODEL_REGISTRY: dict[ModelFamilyName, "Callable[[FamilyResources], ForecastingModel]"] = {
+    "naive": _make_naive,
+    "seasonal_naive": _make_seasonal_naive,
+    "moving_average": _make_moving_average,
+    "exponential_smoothing": _make_exponential_smoothing,
+    "croston": _make_croston,
+    "xgboost_global": _make_xgboost_global,
+    "aggregate_allocate": _make_aggregate_allocate,
 }
 
 
@@ -593,19 +629,20 @@ def list_model_families() -> list[ModelFamilyName]:
 def build_model(
     family: ModelFamilyName,
     *,
-    parent_features: pd.DataFrame | None = None,
+    resources: FamilyResources | None = None,
 ) -> ForecastingModel:
-    """Construct a model family instance.
+    """Construct a model family instance from a :class:`FamilyResources` bag.
 
-    ``parent_features`` is forwarded to ``AggregateAllocateModel``
-    and ignored by every other family. Raises if ``family`` is not
-    in the registry.
+    ``resources.parent_features`` is forwarded to
+    :class:`AggregateAllocateModel` and ignored by every other family
+    — the bag IS the only construction-time channel, so no family
+    gets a special keyword here. Raises if ``family`` is not in the
+    registry.
     """
-    if family not in _MODEL_REGISTRY and family != "aggregate_allocate":
+    if family not in _MODEL_REGISTRY:
         raise ForecastingModelError(f"unknown model family: {family!r}")
-    if family == "aggregate_allocate":
-        return AggregateAllocateModel(parent_features=parent_features)
-    return _MODEL_REGISTRY[family]()
+    resolved = resources if resources is not None else FamilyResources()
+    return _MODEL_REGISTRY[family](resolved)
 
 
 def default_families_for_class(sb_class: str | None) -> list[ModelFamilyName]:
@@ -638,6 +675,7 @@ __all__ = [
     "ForecastingModel",
     "FittedState",
     "ForecastingModelError",
+    "FamilyResources",
     "NaiveModel",
     "SeasonalNaiveModel",
     "MovingAverageModel",

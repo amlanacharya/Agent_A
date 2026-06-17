@@ -8,16 +8,21 @@ from typing import Callable
 
 from forecasting.run_state import (
     HaltedRunError,
+    LifecycleError,
     Phase,
+    advance_phase,
+    can_transition,
     load_run_state,
     run_dir,
     save_run_state,
 )
 
 
-class ConditionViolationError(Exception):
-    def __init__(self, tool: str, condition: str):
-        super().__init__(f"Conductor tool '{tool}' precondition failed: {condition}")
+# ``ConditionViolationError`` is kept as an alias of ``LifecycleError``
+# so existing callers (tests, other tools) that imported the old name
+# keep working — both error types describe the same failure mode
+# (a phase transition was illegal or its preconditions were unmet).
+ConditionViolationError = LifecycleError
 
 
 def get_run_state(run_id: str) -> dict:
@@ -42,39 +47,51 @@ def advance_to_meridian(run_id: str, user_message: str) -> None:
     del user_message
     state = load_run_state(run_id)
     if state.phase == Phase.PREFLIGHT:
-        update_run_state(run_id, {"phase": Phase.MERIDIAN_SCOPING.value})
+        # Only advance if the transition is legal; HALTED is the only
+        # other legal target from PREFLIGHT and we don't auto-halt
+        # here. The HALTED guard is the save_run_state one.
+        updated = advance_phase(state, Phase.MERIDIAN_SCOPING)
+        save_run_state(updated)
 
 
 def confirm_pack_and_advance(run_id: str) -> None:
     state = load_run_state(run_id)
-    if state.phase != Phase.MERIDIAN_SCOPING:
-        raise ConditionViolationError(
-            "confirm_pack_and_advance", f"phase={state.phase} not meridian_scoping"
-        )
-    if state.pack_confirmed:
-        raise ConditionViolationError("confirm_pack_and_advance", "pack already confirmed")
-    if state.open_risks > 0:
-        raise ConditionViolationError(
-            "confirm_pack_and_advance", f"open_risks={state.open_risks}"
-        )
-    update_run_state(run_id, {"pack_confirmed": True, "phase": Phase.FORGE_EDA.value})
+    # ``advance_phase`` raises LifecycleError on an illegal transition
+    # OR a failing precondition — that single check replaces the
+    # three inline guards that used to live here.
+    updated = advance_phase(
+        state,
+        Phase.FORGE_EDA,
+        is_meridian_scoping=(state.phase == Phase.MERIDIAN_SCOPING),
+        pack_not_yet_confirmed=(not state.pack_confirmed),
+        open_risks_is_zero=(state.open_risks == 0),
+    )
+    # Mark the pack confirmed as part of the same atomic update.
+    updated = updated.model_copy(update={"pack_confirmed": True})
+    save_run_state(updated)
 
 
 def trigger_foundry(run_id: str) -> None:
     state = load_run_state(run_id)
-    if not state.forge_complete:
-        raise ConditionViolationError("trigger_foundry", "forge_complete is False")
-    update_run_state(run_id, {"phase": Phase.FOUNDRY_MODELLING.value})
+    updated = advance_phase(
+        state,
+        Phase.FOUNDRY_MODELLING,
+        forge_complete=(state.forge_complete),
+    )
+    save_run_state(updated)
 
 
 def create_prism_run(run_id: str, scenario_description: str, entities: dict) -> dict:
     del scenario_description, entities
     state = load_run_state(run_id)
-    if state.phase != Phase.REPORT_READY:
-        raise ConditionViolationError(
-            "create_prism_run", f"phase={state.phase} not report_ready"
+    if not can_transition(state.phase, Phase.REPORT_READY):
+        # Prism can only start from a finished run. The
+        # ``can_transition`` check is the same one the state machine
+        # uses for everything else — there is no special prism path.
+        raise LifecycleError(
+            f"create_prism_run: phase={state.phase.value} cannot host a scenario run; "
+            f"need phase=report_ready"
         )
-
     whatif_id = f"wi-{uuid.uuid4().hex[:8]}"
     (run_dir(run_id) / "whatif" / whatif_id).mkdir(parents=True, exist_ok=True)
     update_run_state(run_id, {"active_whatif_runs": [*state.active_whatif_runs, whatif_id]})
