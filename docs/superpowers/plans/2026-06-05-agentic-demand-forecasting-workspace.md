@@ -186,7 +186,7 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - segment-level error (per-segment rollup — wired in CB1b)
   - interval coverage (80% PI; stub returns None until scorecard grows interval fields)
   - stockout and overstock impact (mean gap per step)
-- [x] Build champion/challenger promotion (CB1 done 2026-06-17: BacktestWindow contract + builder + leakage check; CB2 done 2026-06-17: PromotionCandidate/Champion/compare_candidate_to_champion; CB3 done 2026-06-17: shadow-mode runner; CB4 pending):
+- [x] Build champion/challenger promotion (CB1 done 2026-06-17: BacktestWindow contract + builder + leakage check; CB2 done 2026-06-17: PromotionCandidate/Champion/compare_candidate_to_champion; CB3 done 2026-06-17: shadow-mode runner; CB4 done 2026-06-17: PROMOTION_DECISIONS.md generator — Phase 5.2 complete):
   - fixed backtest windows
   - leakage checks
   - segment scorecards
@@ -202,7 +202,7 @@ Sub-checkboxes (the order they ship in; later boxes depend on earlier ones):
   - open purchase orders
   - approval thresholds
 
-> ❌ **Phase 5 not started.**
+> ✅ **Phase 5.1 (metric portfolio) and 5.2 (champion/challenger promotion) complete (2026-06-17).** 5.3 (replenishment policy) still pending.
 
 ### Phase 6: UiPath Orchestration
 
@@ -318,7 +318,7 @@ Scope check: this is too large for one engineering implementation plan. It shoul
 | 3: Feature Factory | ✅ Complete | All 8 families implemented in `feature_factory.py` (4 new: stockout/availability, hierarchy, lifecycle/cold-start, intermittency). Fold-aware band logic factored into `_iter_fold_bands()`. 16 new tests; 216 total pass. |
 | 4: Forecasting Harness | ✅ Complete | 6 governed model families + ensemble + custom-family escalation. `forecasting_models.py`, `ensemble.py`, `model_escalation.py`, `forecast_harness.py`. New contracts: `ModelFamilyName`, `ModelScorecard`, `RobustnessCheck`, `ForecastRequest`, `ForecastHarnessReport`, `EnsembleSummary`, `ModelFailureReport`. 83 new tests; 299 total pass. |
 | 4.1: Two-Path Escalation + Proposal Tool | ✅ Complete (2026-06-17) | 7 sub-checkboxes (CB1-CB7): Proposal contracts, decompose_residuals, propose_feature_changes, marginal-gain stop condition, config-escalation loop, card lifecycle, MODEL_REGISTRY provenance. 117 new tests (18+16+17+17+20+11+18); full suite 422 passing. `Escalation Path` term in `CONTEXT.MD`. |
-| 5: Evaluation, Promotion, Replenishment | ❌ Not started | |
+| 5: Evaluation, Promotion, Replenishment | ⚠️ Partial (2026-06-17) | 5.1 metric portfolio + 5.2 champion/challenger promotion complete (50 new tests; suite 492 passing). 5.3 replenishment policy still pending. |
 | 6: UiPath Orchestration | ❌ Not started | |
 | 7: Monitoring & Augmented MLOps | ❌ Not started | |
 | 8: Data Intelligence Cockpit | ⚠️ Partial | Live state model done; no UI surfaces or plots |

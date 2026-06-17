@@ -564,6 +564,128 @@ def run_shadow_mode(
     )
 
 
+# ---------------------------------------------------------------------------
+# PROMOTION_DECISIONS.md generator (Phase 5.2 CB4)
+# ---------------------------------------------------------------------------
+# The promotion decision is an audit log entry: which candidate
+# was compared against which champion, what the WAPE delta was,
+# what the per-segment breakdown was, what the shadow-mode
+# agreement rate was, and what the outcome was (promote /
+# reject / leakage_failed). The log is append-only — existing
+# entries are never modified; new entries go to the bottom of
+# the file under the "## Promotion Decisions" heading.
+#
+# Design rules:
+#
+# * **Pure formatter, separate I/O function.** ``format_promotion_decision``
+#   is a pure function; ``write_promotion_decision`` does the
+#   file write. Tests pin the format without touching disk.
+# * **Reuse the workspace helper.** ``_append_under_heading`` from
+#   ``forecasting.learning_workspace`` is the project's preferred
+#   append helper. This matches the LEARNINGS.md and
+#   MODEL_REGISTRY.md appends (Phase 4.1).
+# * **One entry per decision.** A candidate evaluated multiple
+#   times produces multiple entries. The reader can see the
+#   history.
+# * **Rejects HALTED runs.** Consistent with the other write
+#   paths in the workspace (Phase 4.1 lessons).
+
+from datetime import datetime  # noqa: E402  (kept near the related block)
+
+from forecasting.learning_workspace import (  # noqa: E402
+    RunWorkspace,
+    _append_under_heading,
+    _assert_mutable_run,
+)
+
+
+PROMOTION_DECISIONS_HEADING = "Promotion Decisions"
+
+
+def format_promotion_decision(
+    *,
+    candidate: PromotionCandidate,
+    champion: Champion,
+    comparison: PromotionComparison,
+    shadow: ShadowModeResult,
+    decided_at: datetime,
+) -> str:
+    """Format a promotion decision as markdown.
+
+    Pure function: same inputs -> same markdown block. The
+    block is appended to ``PROMOTION_DECISIONS.md`` by
+    :func:`write_promotion_decision`. The block includes the
+    WAPE delta, per-segment rollup, shadow-mode agreement
+    rate, and the closed-Literal promotion outcome.
+
+    The format is stable markdown so a future reader can grep
+    the file and answer "what was the WAPE delta when X was
+    promoted?" without running any code.
+    """
+    timestamp = decided_at.isoformat()
+    segments_block = (
+        ", ".join(sorted(comparison.segments_compared))
+        if comparison.segments_compared
+        else "(none)"
+    )
+    improved_block = (
+        ", ".join(sorted(comparison.segments_improved))
+        if comparison.segments_improved
+        else "(none)"
+    )
+    regressed_block = (
+        ", ".join(sorted(comparison.segments_regressed))
+        if comparison.segments_regressed
+        else "(none)"
+    )
+    return (
+        f"### {candidate.model_family} vs {champion.model_family} "
+        f"(promotion_outcome={comparison.promotion_outcome}, {timestamp})\n"
+        f"WAPE: candidate={comparison.candidate_wape:.3f}, "
+        f"champion={comparison.champion_wape:.3f}, "
+        f"delta={comparison.wape_delta:+.3f}\n"
+        f"Segments compared: {segments_block}\n"
+        f"Segments improved: {improved_block}\n"
+        f"Segments regressed: {regressed_block}\n"
+        f"Shadow-mode agreement: {shadow.agreement_rate:.1%} "
+        f"(tolerance={shadow.tolerance:.2%})\n"
+        f"Candidate reason: {candidate.reason}\n"
+    )
+
+
+def write_promotion_decision(
+    workspace: RunWorkspace,
+    *,
+    candidate: PromotionCandidate,
+    champion: Champion,
+    comparison: PromotionComparison,
+    shadow: ShadowModeResult,
+    decided_at: datetime,
+) -> None:
+    """Append a promotion decision entry to ``PROMOTION_DECISIONS.md``.
+
+    The entry is appended under the ``## Promotion Decisions``
+    heading (created on the first call). Existing entries are
+    preserved; the file is append-only.
+
+    The function uses the same ``_append_under_heading`` helper
+    as ``promote_learning`` and ``record_proposal_provenance``
+    (Phase 4.1). Rejects HALTED runs (consistent with the
+    other write paths in the workspace).
+    """
+    _assert_mutable_run(workspace.run_id)
+    decisions_path = workspace.artifacts["PROMOTION_DECISIONS.md"]
+    text = decisions_path.read_text()
+    block = format_promotion_decision(
+        candidate=candidate,
+        champion=champion,
+        comparison=comparison,
+        shadow=shadow,
+        decided_at=decided_at,
+    )
+    decisions_path.write_text(_append_under_heading(text, PROMOTION_DECISIONS_HEADING, block))
+
+
 __all__ = (
     "LeakageCheck",
     "PromotionCandidate",
@@ -571,8 +693,11 @@ __all__ = (
     "PromotionComparison",
     "PromotionOutcome",
     "ShadowModeResult",
+    "PROMOTION_DECISIONS_HEADING",
     "build_default_backtest_window",
     "check_window_leakage",
     "compare_candidate_to_champion",
+    "format_promotion_decision",
     "run_shadow_mode",
+    "write_promotion_decision",
 )
