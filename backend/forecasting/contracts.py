@@ -4,6 +4,7 @@ HTTP-layer models live in api/models.py - not here.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -1145,3 +1146,225 @@ class ErpHandoffPayload(BaseModel):
     recommendations: list[dict[str, object]] = Field(default_factory=list)
     # A flat audit trail joining the request, decision, and release.
     audit_trail: list[ApprovalEvent] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 monitoring contracts
+# ---------------------------------------------------------------------------
+# The monitoring layer (CB3-CB6) consumes four typed shapes:
+#
+# * ``DataDriftReport`` — what changed in the input data between runs:
+#   schema changes, missing feeds, distribution shifts, new SKU/location
+#   keys. The four signal kinds map to the plan's data-drift checklist.
+# * ``ModelDriftReport`` — what changed in the model's behaviour between
+#   runs: forecast error, bias, interval calibration (seam only — the
+#   platform does not yet emit quantile forecasts), and per-segment
+#   degradation. The closed enum of segment ids lives on the
+#   ``SegmentMap`` contract; this report just records observations.
+# * ``BusinessOutcomesReport`` — what changed in business outcomes:
+#   expected stockouts/overstock (rolled up from scorecards), service
+#   level, planner overrides, and approval/rejection patterns pulled
+#   from the in-process approval audit log.
+# * ``MonitorSnapshot`` — the typed envelope that joins all three
+#   reports for one monitoring tick, with a generation timestamp. The
+#   writer downstream persists one snapshot per run; the cockpit reads
+#   the snapshot rather than re-running the math.
+#
+# Design rules:
+#
+# * **Pure Pydantic, no I/O.** All four contracts are pure data shapes.
+#   The math lives in CB3/CB4/CB5; the markdown rendering lives in
+#   CB6. The contract layer is the seam, not the engine.
+# * **Closed enums for kinds.** Schema changes, distribution metrics,
+#   and approval decision values use Literals so the cockpit's drift
+#   widget stays finite and reviewable. New values are deliberate
+#   additions, not LLM-judged expansions.
+# * **Defaults to empty.** Every list field defaults to ``[]`` and
+#   every numeric field defaults to a sensible zero, so a snapshot
+#   taken on a fresh run (no prior data) is still a valid report.
+# * **Round-trippable.** All four contracts must survive
+#   ``model_dump_json`` / ``model_validate_json`` so the writer
+#   can persist them and the cockpit can read them back without
+#   losing a field.
+
+
+# --- Data drift ---
+
+# The plan's four data-drift signals map to four field types below.
+# ``SchemaChange.kind`` is a closed enum so the cockpit knows what
+# drift widget to surface; new kinds are deliberate additions to
+# this Literal, not implicit extensions.
+SchemaChangeKind = Literal[
+    "COLUMN_ADDED",
+    "COLUMN_DROPPED",
+    "COLUMN_TYPE_CHANGED",
+    "COLUMN_RENAMED",
+]
+
+
+class SchemaChange(BaseModel):
+    """A single schema-level change between two PreflightBundles.
+
+    ``column`` is the affected column name; ``detail`` is a
+    free-form sentence the report writer renders verbatim. The
+    ``kind`` Literal is the only field the cockpit dispatches on
+    — the rest is human-readable context.
+    """
+
+    kind: SchemaChangeKind
+    column: str
+    detail: str
+
+
+# A distribution shift is one column, one metric, the previous and
+# current value, and the signed pct change. The kind of metric the
+# engine records (``mean``, ``std``, ``p99``, ...) is open; the
+# closed enum is a defensive default the engine currently emits.
+DistributionMetric = Literal["mean", "std", "median", "p99", "min", "max"]
+
+
+class DistributionShift(BaseModel):
+    """A single distribution shift observation.
+
+    ``pct_change`` is signed: positive = the value went up from
+    previous to current. The engine computes it; the report
+    writer renders it. Thresholding (``is this shift worth
+    raising?``) is the engine's job, not the contract's.
+    """
+
+    column: str
+    metric: DistributionMetric
+    previous: float
+    current: float
+    pct_change: float
+
+
+class NewSeriesKeys(BaseModel):
+    """The new SKU / location keys discovered in the latest run.
+
+    Both fields default to empty so a run with no new keys still
+    produces a valid snapshot. The engine compares the
+    ``get_series_keys`` snapshot from the current run against
+    the previous run's snapshot.
+    """
+
+    new_skus: list[str] = Field(default_factory=list)
+    new_locations: list[str] = Field(default_factory=list)
+
+
+class DataDriftReport(BaseModel):
+    """The data-drift portion of a monitoring snapshot.
+
+    All four signal kinds default to empty so a report that
+    observes no drift is still a valid typed value. The cockpit
+    uses the report's field presence to decide which drift widget
+    to surface; an empty list means "no drift, no widget."
+    """
+
+    run_id: str
+    previous_run_id: str
+    schema_changes: list[SchemaChange] = Field(default_factory=list)
+    missing_feeds: list[str] = Field(default_factory=list)
+    distribution_shifts: list[DistributionShift] = Field(default_factory=list)
+    new_keys: NewSeriesKeys = Field(default_factory=NewSeriesKeys)
+
+
+# --- Model drift ---
+
+
+class SegmentDegradation(BaseModel):
+    """A single per-segment MASE observation.
+
+    ``mase_delta`` is signed: positive = degradation (MASE got
+    worse), negative = improvement. The engine reports the raw
+    value; thresholding is the cockpit / alert policy's job.
+    """
+
+    segment_id: str
+    mase_previous: float
+    mase_current: float
+    mase_delta: float
+
+
+class ModelDriftReport(BaseModel):
+    """The model-drift portion of a monitoring snapshot.
+
+    The four top-level scalars (``mase_*``, ``bias_*``) are
+    population-level rollups the engine computes from the current
+    vs previous ``Sequence[ModelScorecard]``. ``segment_degradation``
+    is the per-segment view the cockpit uses to surface "G1
+    regressed, G2 is fine."
+
+    ``interval_calibration`` is the seam — the platform does not
+    yet emit quantile forecasts (the same seam pattern as
+    ``interval_coverage`` in ``metrics.py``), so the field
+    defaults to ``None`` and the engine leaves it None. When
+    the platform grows quantile support, the engine sets it
+    to the observed coverage of the 80% PI.
+    """
+
+    run_id: str
+    previous_run_id: str
+    mase_previous: float
+    mase_current: float
+    mase_delta: float
+    bias_previous: float
+    bias_current: float
+    bias_delta: float
+    interval_calibration: float | None = None
+    segment_degradation: list[SegmentDegradation] = Field(default_factory=list)
+
+
+# --- Business outcomes ---
+
+
+class BusinessOutcomesReport(BaseModel):
+    """The business-outcomes portion of a monitoring snapshot.
+
+    The five signals map to the plan's business-outcomes checklist:
+
+    * ``expected_stockouts`` / ``expected_overstock`` — rolled up
+      from the per-step gaps in the current run's scorecards
+      (reuses the math in ``metrics.py``).
+    * ``service_level`` — fraction of periods where the inventory
+      posture met demand; bounded to ``[0, 1]`` so the cockpit
+      can render it as a percentage without validation.
+    * ``planner_overrides`` — free-form descriptions of human
+      decisions that diverged from the platform's recommendation.
+    * ``approval_patterns`` — a count map of APPROVE / REJECT /
+      DEFER decisions pulled from the in-process approval audit
+      log. Keys default to the three ApprovalDecisionValue
+      literals; absent decisions are not added to the map.
+    """
+
+    run_id: str
+    expected_stockouts: float
+    expected_overstock: float
+    service_level: float = Field(ge=0.0, le=1.0)
+    planner_overrides: list[str] = Field(default_factory=list)
+    approval_patterns: dict[str, int] = Field(default_factory=dict)
+
+
+# --- Envelope ---
+
+
+class MonitorSnapshot(BaseModel):
+    """The typed envelope joining all three monitoring reports.
+
+    One snapshot per monitoring tick. The writer downstream
+    persists one snapshot per run as JSON; the cockpit reads
+    the snapshot rather than re-running the math. ``generated_at``
+    defaults to the current UTC ISO-8601 timestamp at construction
+    time, so the writer can call the constructor without
+    supplying a timestamp and still get a renderable value.
+    """
+
+    run_id: str
+    previous_run_id: str
+    generated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    data: DataDriftReport
+    model: ModelDriftReport
+    business: BusinessOutcomesReport
