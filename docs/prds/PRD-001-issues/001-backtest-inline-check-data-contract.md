@@ -15,12 +15,12 @@ The function's behaviour, signature, and return shape are unchanged. Existing `t
 
 ## Acceptance criteria
 
-- [ ] `backtest.py` no longer imports from `model_escalation` (verify with `grep -n "from forecasting.model_escalation" backend/forecasting/backtest.py` returns nothing)
-- [ ] `check_data_contract` is implemented as a private helper inside `backtest.py` with the same signature `(forecast: list[float], actual: list[float] | None, horizon: int) -> RobustnessCheck` and identical behaviour
-- [ ] `model_escalation.py` no longer exports `check_data_contract` (or, if any other module uses it, the export is preserved there with the wrong-direction import removed from `backtest.py` only)
-- [ ] `uv run pytest -q` is green; full suite remains at 646 passing
-- [ ] One commit on `main` with message `feat: refactor cb1 - inline check_data_contract into backtest, fix dependency direction`
-- [ ] Commit is pushed
+- [x] `backtest.py` no longer imports from `model_escalation` (verify with `grep -n "from forecasting.model_escalation" backend/forecasting/backtest.py` returns nothing)
+- [x] `check_data_contract` is implemented as a private helper inside `backtest.py` with the same signature `(forecast: list[float], actual: list[float] | None, horizon: int) -> RobustnessCheck` and identical behaviour
+- [x] `model_escalation.py` no longer exports `check_data_contract` (or, if any other module uses it, the export is preserved there with the wrong-direction import removed from `backtest.py` only)
+- [x] `uv run pytest -q` is green; full suite remains at 646 passing
+- [x] One commit on `main` with message `feat: refactor cb1 - inline check_data_contract into backtest, fix dependency direction`
+- [x] Commit is pushed
 
 ## Blocked by
 
