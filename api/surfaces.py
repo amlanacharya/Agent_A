@@ -48,9 +48,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from api.models import SurfaceName, SurfaceSnapshot
+
+if TYPE_CHECKING:
+    import pandas as pd
+    from forecasting.contracts import EDAReport, SegmentMap
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +210,157 @@ class MlopsMonitorSurface(CockpitSurface):
 # ---------------------------------------------------------------------------
 
 
+# The head preview is capped at 50 rows. A larger table
+# would bloat the FastAPI response and slow the cockpit
+# render; the cockpit can fetch a larger slice via a
+# future ``?offset=`` parameter.
+_TABLE_HEAD_LIMIT = 50
+
+
+EDAReportProvider = Callable[[str], "EDAReport | None"]
+"""Type alias for the EDA-report provider callable.
+
+The provider takes a ``run_id`` and returns the
+``EDAReport`` for that run, or ``None`` if the run has
+not yet reached the EDA phase. The production wiring
+(CB8) reads the EDA report from ``outputs/{run_id}/``
+or reconstructs it from ``run_state.json``; tests pass
+a lambda that returns a fixed report.
+"""
+
+CanonicalTableProvider = Callable[[str], "pd.DataFrame | None"]
+"""Type alias for the canonical-table provider callable.
+
+The provider takes a ``run_id`` and returns the
+post-Preflight canonical demand table for that run,
+or ``None`` if the run has not yet reached Preflight.
+"""
+
+SegmentMapProvider = Callable[[str], "SegmentMap | None"]
+"""Type alias for the segment-map provider callable.
+
+The provider takes a ``run_id`` and returns the
+``SegmentMap`` for that run, or ``None`` if not
+yet assigned.
+"""
+
+
+class DataHealthSurface(CockpitSurface):
+    """The Data Health surface — the Phase 2 EDA report summary.
+
+    Surfaces the headline numbers the cockpit needs to
+    render the data-health widget: series count, segment
+    count, demand-class breakdown, per-segment profiles,
+    and the EDA narrative. The full EDA report is also
+    available via the per-segment / per-series fields
+    so the cockpit can drill down.
+    """
+
+    surface: SurfaceName = "data_health"
+
+    def __init__(self, *, eda_report_provider: EDAReportProvider) -> None:
+        self._eda_report_provider = eda_report_provider
+
+    def render(self, run_id: str) -> SurfaceSnapshot:
+        report = self._eda_report_provider(run_id)
+        if report is None:
+            return SurfaceSnapshot(
+                run_id=run_id,
+                surface="data_health",
+                state={
+                    "series_count": 0,
+                    "segment_count": 0,
+                    "segment_profiles": [],
+                    "demand_class_breakdown": {},
+                    "narrative": "",
+                },
+            )
+        # The per-segment profiles serialize via model_dump so the
+        # response is JSON-safe over HTTP. The demand-class
+        # breakdown is the union of per-segment breakdowns.
+        demand_class_breakdown: dict[str, int] = {}
+        for profile in report.segment_profiles:
+            for sb_class, count in profile.demand_class_distribution.items():
+                demand_class_breakdown[sb_class] = (
+                    demand_class_breakdown.get(sb_class, 0) + count
+                )
+        return SurfaceSnapshot(
+            run_id=run_id,
+            surface="data_health",
+            state={
+                "series_count": len(report.series_profiles),
+                "segment_count": len(report.segment_profiles),
+                "segment_profiles": [
+                    profile.model_dump() for profile in report.segment_profiles
+                ],
+                "demand_class_breakdown": demand_class_breakdown,
+                "narrative": report.narrative,
+            },
+        )
+
+
+class CanonicalTableBuilderSurface(CockpitSurface):
+    """The Canonical Table Builder surface — the post-Preflight demand table.
+
+    Surfaces the head (first ``_TABLE_HEAD_LIMIT`` rows) +
+    the column list + the row count + the per-segment
+    series count. The cockpit shows the head as a preview
+    table; the segment widget shows the per-segment
+    series count.
+    """
+
+    surface: SurfaceName = "canonical_table_builder"
+
+    def __init__(
+        self,
+        *,
+        canonical_table_provider: CanonicalTableProvider,
+        segment_map_provider: SegmentMapProvider | None = None,
+    ) -> None:
+        self._canonical_table_provider = canonical_table_provider
+        self._segment_map_provider = segment_map_provider
+
+    def render(self, run_id: str) -> SurfaceSnapshot:
+        df = self._canonical_table_provider(run_id)
+        if df is None or df.empty:
+            state: dict[str, Any] = {
+                "row_count": 0,
+                "column_count": 0,
+                "columns": [],
+                "head": [],
+                "segments": [],
+            }
+            return SurfaceSnapshot(
+                run_id=run_id,
+                surface="canonical_table_builder",
+                state=state,
+            )
+        head_records = df.head(_TABLE_HEAD_LIMIT).to_dict(orient="records")
+        segments_state: list[dict[str, Any]] = []
+        if self._segment_map_provider is not None:
+            segment_map = self._segment_map_provider(run_id)
+            if segment_map is not None:
+                segments_state = [
+                    {
+                        "segment_id": seg.segment_id,
+                        "label": seg.label,
+                        "series_count": len(seg.series_keys),
+                    }
+                    for seg in segment_map.segments
+                ]
+        return SurfaceSnapshot(
+            run_id=run_id,
+            surface="canonical_table_builder",
+            state={
+                "row_count": len(df),
+                "column_count": len(df.columns),
+                "columns": list(df.columns),
+                "head": head_records,
+                "segments": segments_state,
+            },
+        )
+
+
 class SurfaceRegistry:
     """The typed dispatch seam for cockpit surfaces.
 
@@ -240,11 +395,16 @@ class SurfaceRegistry:
 
 
 __all__ = (
+    "CanonicalTableBuilderSurface",
+    "CanonicalTableProvider",
     "CockpitSurface",
     "CockpitStateProvider",
+    "DataHealthSurface",
     "DuplicateSurfaceError",
+    "EDAReportProvider",
     "MissionControlSurface",
     "MlopsMonitorSurface",
+    "SegmentMapProvider",
     "SurfaceError",
     "SurfaceRegistry",
     "UnknownSurfaceError",
