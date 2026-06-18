@@ -15,20 +15,71 @@
  * absolute URLs.
  */
 
-import type { components, operations } from "./schema";
+import type { operations } from "./schema";
 
-export type SurfaceName = components["schemas"]["SurfaceName"];
-export type PlotKind = components["schemas"]["PlotKind"];
-export type SurfaceSnapshot = components["schemas"]["SurfaceSnapshot"];
-export type PlotResponse = components["schemas"]["PlotResponse"];
-export type CockpitPlotRequest = components["schemas"]["CockpitPlotRequest"];
+// The 9 closed surface kinds + 7 closed plot kinds are typed as
+// union strings here. They mirror the Python ``SurfaceName`` and
+// ``PlotKind`` ``Literal`` types in ``api/models.py``; the
+// openapi-typescript codegen does NOT promote these to standalone
+// schemas (it inlines them into the operation types), so we
+// redefine them as TS string literal unions. If a new surface or
+// plot kind is added to api/models.py, add it here too — the
+// ``fetchSurface`` + ``renderPlot`` signatures will fail to compile
+// in the surface CB if the union is wrong.
+export type SurfaceName =
+  | "mission_control"
+  | "data_health"
+  | "canonical_table_builder"
+  | "eda_explorer"
+  | "feature_factory"
+  | "model_arena"
+  | "forecast_review"
+  | "replenishment_board"
+  | "mlops_monitor"
+  | "learning_journal";
+
+export type PlotKind =
+  | "demand_curve"
+  | "sparsity"
+  | "anomalies"
+  | "forecast_band"
+  | "backtest"
+  | "feature_importance"
+  | "drift_chart";
+
+// SurfaceSnapshot and PlotResponse are open-ended dicts on the
+// FastAPI side (the per-surface ``state`` is `dict[str, object]`).
+// The TS types reflect that — the surface CB adds bespoke fields
+// via intersection if needed, but the contract test only checks
+// the structural shape.
+export interface SurfaceSnapshot {
+  run_id: string;
+  surface: SurfaceName;
+  state: Record<string, unknown>;
+}
+
+export interface PlotResponse {
+  kind: PlotKind;
+  content_type: string;
+  bytes_b64: string;
+  width: number;
+  height: number;
+}
+
+export interface CockpitPlotRequest {
+  run_id: string;
+  kind: PlotKind;
+  params?: Record<string, unknown>;
+}
 
 // Vite's bundler replaces `import.meta.env` at build time. In Node-side
 // tests there is no import.meta.env; default to `/api` (browser shape).
 let BASE: string =
   typeof import.meta !== "undefined" &&
-  (import.meta as { env?: { VITE_API_BASE?: string } }).env?.VITE_API_BASE
-    ? (import.meta as { env: { VITE_API_BASE: string } }).env.VITE_API_BASE
+  (import.meta as unknown as { env?: { VITE_API_BASE?: string } }).env
+    ?.VITE_API_BASE
+    ? (import.meta as unknown as { env: { VITE_API_BASE: string } }).env
+        .VITE_API_BASE
     : "/api";
 
 /** Override the base URL (used by the contract test in Node). */
@@ -65,7 +116,7 @@ export class ApiError extends Error {
 }
 
 /** GET /surfaces — list the registered surface names (for the UI menu). */
-export function listSurfaces(): Promise<operations["list_surfaces_surfaces_get"]["responses"]["200"]["content"]["application/json"]> {
+export function listSurfaces(): Promise<{ surfaces: SurfaceName[] }> {
   return jsonFetch("/surfaces");
 }
 

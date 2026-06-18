@@ -385,3 +385,88 @@ def test_plot_endpoint_returns_typed_error_for_missing_params(client: TestClient
 def test_all_plan_surfaces_are_registered(registry: SurfaceRegistry) -> None:
     """The registry covers every surface the plan calls for."""
     assert set(registry.list_surfaces()) == set(SurfaceName.__args__)
+
+
+# ---------------------------------------------------------------------------
+# /runs endpoint (CB4 of Phase 9)
+# ---------------------------------------------------------------------------
+
+
+def test_runs_endpoint_lists_directories_with_artifacts(
+    client: TestClient, registry: SurfaceRegistry, tmp_path: Path
+) -> None:
+    """The /runs endpoint surfaces run directories under outputs/.
+
+    A directory is a run iff it contains at least one Phase 7
+    monitoring artifact (MONITORING_REPORT.md, DRIFT_REPORT.md,
+    OVERRIDE_ANALYSIS.md, MODEL_HEALTH.md). Scratch directories
+    without artifacts are filtered out.
+
+    CB4 of Phase 9 added this endpoint to feed the cockpit's run
+    selector. The cockpit's `outputs/` lives at backend/outputs/ in
+    production; this test uses tmp_path so it doesn't depend on
+    filesystem state outside pytest.
+    """
+    # The existing `registry` fixture already writes artifacts under
+    # tmp_path/outputs/run_id. Use a subdirectory of tmp_path to
+    # avoid the FileExistsError on top-level `outputs/`.
+    outputs_root = tmp_path / "runs_root"
+    outputs_root.mkdir()
+    # Run A: has MONITORING_REPORT.md (qualifies).
+    run_a = outputs_root / "run-2025-01"
+    run_a.mkdir()
+    (run_a / "MONITORING_REPORT.md").write_text("# monitoring\n")
+    # Run B: has MODEL_HEALTH.md (qualifies).
+    run_b = outputs_root / "run-2025-02"
+    run_b.mkdir()
+    (run_b / "MODEL_HEALTH.md").write_text("# health\n")
+    # Scratch: no artifacts (filtered out).
+    scratch = outputs_root / "scratch-tmp"
+    scratch.mkdir()
+    (scratch / "notes.txt").write_text("not a real run\n")
+    # File at top level (filtered out — not a directory).
+    (outputs_root / "README.md").write_text("not a run\n")
+
+    # The test's `client` was built against the default factory;
+    # rebuild against this tmp_path root so the endpoint reads from
+    # it.
+    from api.app import build_cockpit_app
+    from api.plot_engine import InProcessPlotEngine
+
+    fresh_app = build_cockpit_app(
+        registry=registry,
+        engine=InProcessPlotEngine(),
+        outputs_root=outputs_root,
+    )
+    fresh_client = TestClient(fresh_app)
+
+    response = fresh_client.get("/runs")
+    assert response.status_code == 200
+    runs = response.json()["runs"]
+    run_ids = [r["run_id"] for r in runs]
+    assert run_ids == ["run-2025-01", "run-2025-02"]
+    # The scratch directory must not appear.
+    assert "scratch-tmp" not in run_ids
+    for entry in runs:
+        assert "path" in entry
+        assert "last_modified_iso" in entry
+
+
+def test_runs_endpoint_returns_empty_when_outputs_root_missing(
+    registry: SurfaceRegistry, tmp_path: Path
+) -> None:
+    """If the outputs root does not exist, /runs returns an empty list."""
+    from api.app import build_cockpit_app
+    from api.plot_engine import InProcessPlotEngine
+
+    missing_root = tmp_path / "does-not-exist"
+    app = build_cockpit_app(
+        registry=registry,
+        engine=InProcessPlotEngine(),
+        outputs_root=missing_root,
+    )
+    client = TestClient(app)
+
+    response = client.get("/runs")
+    assert response.status_code == 200
+    assert response.json() == {"runs": []}

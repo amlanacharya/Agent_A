@@ -13,9 +13,8 @@ import {
   type SurfaceName,
   type SurfaceSnapshot,
 } from "./client";
-import type { operations } from "./schema";
 
-export type SurfacesList = operations["list_surfaces_surfaces_get"]["responses"]["200"]["content"]["application/json"];
+export type SurfacesList = { surfaces: SurfaceName[] };
 
 export const queryKeys = {
   surfaces: ["surfaces"] as const,

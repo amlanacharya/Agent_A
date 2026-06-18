@@ -38,6 +38,9 @@ Design:
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 
 from api.models import CockpitPlotRequest
@@ -45,10 +48,20 @@ from api.plot_engine import PlotEngine
 from api.surfaces import SurfaceRegistry, UnknownSurfaceError
 
 
+# Default location for run outputs. CB4 of Phase 9 added this — the
+# cockpit's run selector reads from this directory by default. The
+# dev launcher (api/__main__.py) uses a temp dir; the platform's
+# production startup module wires the real ``backend/outputs/``
+# path. Keeping the default as the cwd-relative ``outputs/`` lets
+# both the launcher and the production wiring use the same code
+# path without an env-var dance.
+DEFAULT_OUTPUTS_ROOT = Path(os.environ.get("AGENT_A_OUTPUTS_ROOT", "outputs")).resolve()
+
+
 def build_cockpit_app(
-    *,
     registry: SurfaceRegistry,
     engine: PlotEngine,
+    outputs_root: Path | None = None,
 ) -> FastAPI:
     """Build the FastAPI app wired to ``registry`` + ``engine``.
 
@@ -59,10 +72,49 @@ def build_cockpit_app(
     """
     app = FastAPI(title="Agent_A Cockpit", version="0.1.0")
 
+    # Resolve the run outputs root once. If the caller passes one
+    # (e.g. the dev launcher uses a temp dir), prefer it. Otherwise
+    # fall back to the env-var / cwd-relative default.
+    root = (outputs_root or DEFAULT_OUTPUTS_ROOT).resolve()
+
     @app.get("/surfaces")
     def list_surfaces() -> dict[str, list[str]]:
         """List the registered surface names (for the UI menu)."""
         return {"surfaces": registry.list_surfaces()}
+
+    @app.get("/runs")
+    def list_runs() -> dict[str, list[dict[str, object]]]:
+        """List the run directories under ``outputs_root``.
+
+        Each entry is ``{run_id, path, last_modified_iso}``. The
+        cockpit's run selector (CB4) consumes this to populate
+        the left-rail dropdown. A directory is a run iff it contains
+        at least one of the four Phase 7 monitoring artifacts
+        (MONITORING_REPORT.md / DRIFT_REPORT.md / OVERRIDE_ANALYSIS.md
+        / MODEL_HEALTH.md); this avoids surfacing scratch directories
+        that happen to live under ``outputs/``.
+        """
+        if not root.exists():
+            return {"runs": []}
+        artifact_names = {
+            "MONITORING_REPORT.md",
+            "DRIFT_REPORT.md",
+            "OVERRIDE_ANALYSIS.md",
+            "MODEL_HEALTH.md",
+        }
+        runs: list[dict[str, object]] = []
+        for child in sorted(root.iterdir(), key=lambda p: p.name):
+            if not child.is_dir():
+                continue
+            if not any((child / name).exists() for name in artifact_names):
+                continue
+            stat = child.stat()
+            runs.append({
+                "run_id": child.name,
+                "path": str(child),
+                "last_modified_iso": stat.st_mtime,
+            })
+        return {"runs": runs}
 
     @app.get("/surfaces/{surface_name}/{run_id}")
     def render_surface(surface_name: str, run_id: str) -> dict[str, object]:
