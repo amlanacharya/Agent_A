@@ -69,21 +69,21 @@ export function FeatureFactory({ runId }: FeatureFactoryProps): JSX.Element {
     return { key, label, enabled, total: seriesList.length };
   });
 
-  const columns: DataTableColumn<{ series_key: string; enabled_count: number }> = [
+  const columns: DataTableColumn<{ series_key: string; enabled_count: number }>[] = [
     {
       header: "Series",
       accessor: (r) => r.series_key,
       width: "w-32",
-      sortKey: (r) => r.series_key,
+      sortKey: (r: { series_key: string; enabled_count: number }) => r.series_key,
     },
     {
       header: "Families enabled",
-      accessor: (r) => `${r.enabled_count} / ${FAMILY_KEYS.length}`,
+      accessor: (r: { series_key: string; enabled_count: number }) => `${r.enabled_count} / ${FAMILY_KEYS.length}`,
       numeric: true,
     },
     {
       header: "Recommended models",
-      accessor: (r) => recommendedMap[r.series_key]?.join(", ") ?? "—",
+      accessor: (r: { series_key: string; enabled_count: number }) => recommendedMap[r.series_key]?.join(", ") ?? "—",
     },
   ];
 

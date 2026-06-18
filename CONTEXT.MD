@@ -105,6 +105,20 @@ _Avoid_: External report, stakeholder view
 The `downstream_impact` field from Override Claims, surfaced explicitly in the Report. Tells the reader what effect the user's override decision had on the forecasting outcome.
 _Avoid_: Override impact, consequence, downstream effect
 
+### Cockpit (Phase 9 frontend)
+
+**Cockpit Frontend**:
+The React + Vite + Tailwind + TanStack Query SPA at `frontend/` that consumes the Phase 8 FastAPI surface (`/surfaces`, `/surfaces/{name}/{run_id}`, `/plots`, `/runs`). FastAPI serves the built SPA via `StaticFiles` mount at `/`; the same `/api` path works in dev (Vite proxy) and prod (same-origin). Backend is authoritative for data shape; the frontend regenerates typed clients via `pnpm generate-api` against the live `/openapi.json`. The 11 `prototype/*/code.html` files were visual references only — their patterns are absorbed into `frontend/src/components/` + `frontend/src/pages/`. `frontend/dist/`, `frontend/node_modules/`, and `frontend/src/api/schema.ts` are never committed.
+_Avoid_: frontend, SPA, web app
+
+**Plot Frame**:
+The `<PlotFrame>` component (`frontend/src/components/PlotFrame.tsx`) is the single-source consumer of the FastAPI `/plots` endpoint. It renders base64 PNG/SVG bytes as an `<img data-plot-kind=K>` and handles loading + error states. TanStack Query wraps the call with `staleTime: 5min` (plot bytes are heavy + don't change inside a session). All 7 plot kinds (demand_curve, sparsity, anomalies, forecast_band, backtest, feature_importance, drift_chart) flow through this wrapper.
+_Avoid_: plot component, chart, PlotFrame widget
+
+**Surface Route**:
+The path `/surfaces/:name/:runId` is the canonical URL shape for every cockpit surface (Mission Control, Data Health, EDA Explorer, Feature Factory, Model Arena, Forecast Review, Replenishment Board, MLOps Monitor, Learning Journal). CB5–CB12 added bespoke pages per surface; `GenericSurfacePage` is the JSON-fallback for any surface without a bespoke implementation (currently `canonical_table_builder`). The path shape stays stable across phases so deep links and the top-nav menu keep working.
+_Avoid_: page URL, view path, surface path
+
 ### Modelling
 
 **Walk-Forward Fold**:

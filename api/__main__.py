@@ -189,7 +189,15 @@ def main() -> None:
         workspace_root = tmp_path / "workspace"
         registry = _build_dev_registry(artifacts_root, workspace_root)
         engine = InProcessPlotEngine()
-        app = build_cockpit_app(registry=registry, engine=engine)
+        # Pass artifacts_root as outputs_root so /runs surfaces
+        # the temp dir's qualifying runs (CB4). Without this,
+        # /runs falls back to DEFAULT_OUTPUTS_ROOT = ./outputs
+        # which is the cwd at process start — fragile.
+        app = build_cockpit_app(
+            registry=registry,
+            engine=engine,
+            outputs_root=artifacts_root,
+        )
         uvicorn.run(app, host="127.0.0.1", port=8000)
 
 

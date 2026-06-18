@@ -133,7 +133,7 @@ export function ModelArena({ runId }: ModelArenaProps): JSX.Element {
         <DataTable
           columns={columns}
           rows={scorecards}
-          rowKey={(r, idx) => `${r.model_family ?? "x"}-${r.series_key ?? "x"}-${idx}`}
+          rowKey={(r) => `${r.model_family ?? "x"}-${r.series_key ?? "x"}`}
           emptyMessage="No scorecards for this run."
           caption={`${scorecards.length} scorecard(s)`}
         />

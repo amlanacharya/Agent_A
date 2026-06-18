@@ -137,7 +137,7 @@ export function ForecastReview({ runId }: ForecastReviewProps): JSX.Element {
         <DataTable
           columns={columns}
           rows={seriesResults}
-          rowKey={(r, idx) => `${r.series_key ?? "x"}-${idx}`}
+          rowKey={(r) => `${r.series_key ?? "x"}`}
           emptyMessage="No series results for this run."
           caption={`${seriesResults.length} series`}
         />

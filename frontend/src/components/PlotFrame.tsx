@@ -94,8 +94,12 @@ function usePlot(
   kind: PlotKind,
   params: Record<string, unknown>
 ): UseQueryResult<PlotResponse, Error> {
+  // Stringify params so the queryKey is stable across re-renders
+  // (otherwise every render creates a fresh params object and
+  // TanStack Query treats it as a new query, refetching endlessly).
+  const paramsKey = JSON.stringify(params);
   return useQuery({
-    queryKey: ["plots", runId, kind, params] as const,
+    queryKey: ["plots", runId, kind, paramsKey] as const,
     queryFn: () => renderPlot({ run_id: runId, kind, params }),
     enabled: Boolean(runId),
     // Plot bytes are heavy + don't change frequently inside a

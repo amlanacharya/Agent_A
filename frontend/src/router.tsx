@@ -9,6 +9,7 @@ import { ModelArena } from "@/pages/ModelArena";
 import { ForecastReview } from "@/pages/ForecastReview";
 import { ReplenishmentBoard } from "@/pages/ReplenishmentBoard";
 import { LearningJournal } from "@/pages/LearningJournal";
+import { MlopsMonitor } from "@/pages/MlopsMonitor";
 
 /**
  * Router — CB4's routes. CB5–CB12 add bespoke pages and slot them
@@ -58,6 +59,10 @@ export const router = createBrowserRouter([
       {
         path: "surfaces/learning_journal/:runId",
         element: <LearningJournalRoute />,
+      },
+      {
+        path: "surfaces/mlops_monitor/:runId",
+        element: <MlopsMonitorRoute />,
       },
       { path: "surfaces/:name/:runId", element: <GenericSurfacePage /> },
     ],
@@ -109,4 +114,9 @@ function ReplenishmentBoardRoute(): JSX.Element {
 function LearningJournalRoute(): JSX.Element {
   const { runId = "dev-run" } = useParams<{ runId: string }>();
   return <LearningJournal runId={runId} />;
+}
+
+function MlopsMonitorRoute(): JSX.Element {
+  const { runId = "dev-run" } = useParams<{ runId: string }>();
+  return <MlopsMonitor runId={runId} />;
 }

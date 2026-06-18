@@ -135,7 +135,7 @@ export function ReplenishmentBoard({ runId }: ReplenishmentBoardProps): JSX.Elem
         <DataTable
           columns={columns}
           rows={recommendations}
-          rowKey={(r, idx) => `${r.series_key ?? "x"}-${idx}`}
+          rowKey={(r) => `${r.series_key ?? "x"}`}
           emptyMessage="No replenishment recommendations for this run."
           caption={`${recommendations.length} recommendation(s)`}
         />
