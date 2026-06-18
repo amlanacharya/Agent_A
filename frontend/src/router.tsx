@@ -3,6 +3,7 @@ import { AppShell } from "@/components/AppShell";
 import { GenericSurfacePage } from "@/pages/SurfacePage";
 import { MissionControl } from "@/pages/MissionControl";
 import { DataHealth } from "@/pages/DataHealth";
+import { EdaExplorer } from "@/pages/EdaExplorer";
 
 /**
  * Router — CB4's routes. CB5–CB12 add bespoke pages and slot them
@@ -29,6 +30,10 @@ export const router = createBrowserRouter([
         path: "surfaces/data_health/:runId",
         element: <DataHealthRoute />,
       },
+      {
+        path: "surfaces/eda_explorer/:runId",
+        element: <EdaExplorerRoute />,
+      },
       { path: "surfaces/:name/:runId", element: <GenericSurfacePage /> },
     ],
   },
@@ -49,4 +54,9 @@ function MissionControlRoute(): JSX.Element {
 function DataHealthRoute(): JSX.Element {
   const { runId = "dev-run" } = useParams<{ runId: string }>();
   return <DataHealth runId={runId} />;
+}
+
+function EdaExplorerRoute(): JSX.Element {
+  const { runId = "dev-run" } = useParams<{ runId: string }>();
+  return <EdaExplorer runId={runId} />;
 }
