@@ -59,6 +59,7 @@ if TYPE_CHECKING:
         FeatureFlags,
         ForecastHarnessReport,
         FoundryReport,
+        ReplenishmentRecommendation,
         SegmentMap,
         SeriesDemandProfile,
     )
@@ -266,6 +267,14 @@ HarnessReportProvider = Callable[[str], "ForecastHarnessReport | None"]
 
 FoundryReportProvider = Callable[[str], "FoundryReport | None"]
 """Type alias for the Phase 4 Foundry report provider."""
+
+ReplenishmentRecommendationsProvider = Callable[[str], "list[ReplenishmentRecommendation] | None"]
+"""Type alias for the Phase 5 replenishment-batch provider.
+
+Returns a list of per-series recommendations, or
+``None`` if the run has not yet reached the
+replenishment phase.
+"""
 
 
 class DataHealthSurface(CockpitSurface):
@@ -560,6 +569,141 @@ class ForecastReviewSurface(CockpitSurface):
         )
 
 
+class ReplenishmentBoardSurface(CockpitSurface):
+    """The Replenishment Board surface — the Phase 5 batch summary.
+
+    Surfaces the per-series
+    ``ReplenishmentRecommendation`` (lead time, safety
+    stock, ROP, target inventory, current inventory,
+    open POs, order quantity, approval tier) plus the
+    batch rollup (count, total order quantity, per-tier
+    breakdown). The cockpit's Replenishment Board is
+    the planner's approval widget.
+    """
+
+    surface: SurfaceName = "replenishment_board"
+
+    def __init__(self, *, recommendations_provider: ReplenishmentRecommendationsProvider) -> None:
+        self._recommendations_provider = recommendations_provider
+
+    def render(self, run_id: str) -> SurfaceSnapshot:
+        recommendations = self._recommendations_provider(run_id) or []
+        # The per-tier breakdown is a count of how many
+        # recommendations fell into each tier. The total
+        # order quantity is the sum across the batch.
+        approval_tier_breakdown: dict[str, int] = {}
+        total_order_quantity = 0.0
+        for rec in recommendations:
+            tier = str(rec.approval_tier)
+            approval_tier_breakdown[tier] = approval_tier_breakdown.get(tier, 0) + 1
+            total_order_quantity += float(rec.order_quantity)
+        return SurfaceSnapshot(
+            run_id=run_id,
+            surface="replenishment_board",
+            state={
+                "recommendation_count": len(recommendations),
+                "recommendations": [
+                    rec.model_dump() for rec in recommendations
+                ],
+                "total_order_quantity": total_order_quantity,
+                "approval_tier_breakdown": approval_tier_breakdown,
+            },
+        )
+
+
+class LearningJournalSurface(CockpitSurface):
+    """The Learning Journal surface — the Phase 1 workspace markdown.
+
+    Surfaces the six workspace markdown artifacts the
+    cockpit renders (LEARNINGS.md, DECISIONS.md,
+    ASSUMPTIONS.md, RUNBOOK.md, MODEL_REGISTRY.md,
+    PROMOTION_DECISIONS.md) plus a card-lifecycle summary
+    (active / retired card counts parsed from
+    LEARNINGS.md).
+
+    Missing artifacts surface as ``None`` so the
+    cockpit renders an empty-state widget rather than
+    a 404. A workspace directory that does not exist
+    yet is also handled (no crash).
+    """
+
+    surface: SurfaceName = "learning_journal"
+
+    # The six workspace artifacts. The set is closed
+    # (the Phase 1 plan's artifact checklist); a new
+    # artifact is a deliberate addition to this tuple
+    # and a matching update to the Phase 1 workspace.
+    _WORKSPACE_FILES = (
+        "LEARNINGS.md",
+        "DECISIONS.md",
+        "ASSUMPTIONS.md",
+        "RUNBOOK.md",
+        "MODEL_REGISTRY.md",
+        "PROMOTION_DECISIONS.md",
+    )
+
+    def __init__(self, *, workspace_root: Path) -> None:
+        self._workspace_root = Path(workspace_root)
+
+    def render(self, run_id: str) -> SurfaceSnapshot:
+        state: dict[str, object] = {}
+        for filename in self._WORKSPACE_FILES:
+            path = self._workspace_root / filename
+            state[filename] = (
+                path.read_text(encoding="utf-8")
+                if path.exists()
+                else None
+            )
+        # Parse the card-lifecycle summary from the
+        # LEARNINGS.md front matter. The Phase 1
+        # workspace writes a ``## Active`` and
+        # ``## Retired`` section heading; the surface
+        # counts bullet items under each.
+        active_cards = 0
+        retired_cards = 0
+        learnings = state.get("LEARNINGS.md")
+        if isinstance(learnings, str):
+            active_cards, retired_cards = _parse_card_lifecycle(learnings)
+        state["active_cards"] = active_cards
+        state["retired_cards"] = retired_cards
+        return SurfaceSnapshot(
+            run_id=run_id,
+            surface="learning_journal",
+            state=state,
+        )
+
+
+def _parse_card_lifecycle(learnings_text: str) -> tuple[int, int]:
+    """Parse active / retired card counts from LEARNINGS.md text.
+
+    The Phase 1 workspace writes a ``## Active`` and
+    ``## Retired`` section; each section's entries are
+    bulleted. Returns ``(active_count, retired_count)``.
+    """
+    active_count = 0
+    retired_count = 0
+    section: str | None = None
+    for line in learnings_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            heading = stripped[3:].strip().lower()
+            if heading == "active":
+                section = "active"
+            elif heading == "retired":
+                section = "retired"
+            else:
+                section = None
+            continue
+        if section is None:
+            continue
+        if stripped.startswith("- "):
+            if section == "active":
+                active_count += 1
+            elif section == "retired":
+                retired_count += 1
+    return active_count, retired_count
+
+
 class SurfaceRegistry:
     """The typed dispatch seam for cockpit surfaces.
 
@@ -607,9 +751,12 @@ __all__ = (
     "ForecastReviewSurface",
     "FoundryReportProvider",
     "HarnessReportProvider",
+    "LearningJournalSurface",
     "MissionControlSurface",
     "MlopsMonitorSurface",
     "ModelArenaSurface",
+    "ReplenishmentBoardSurface",
+    "ReplenishmentRecommendationsProvider",
     "SegmentMapProvider",
     "SeriesProfilesProvider",
     "SurfaceError",
