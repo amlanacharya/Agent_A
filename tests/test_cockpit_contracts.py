@@ -195,19 +195,32 @@ def test_in_process_plot_engine_is_a_plot_engine() -> None:
 
 
 def test_in_process_plot_engine_delegates_to_kinds() -> None:
-    """The engine routes to the per-kind handler (stub-validated here)."""
+    """The engine routes to the per-kind handler (CB3).
+
+    A demand-curve request is the simplest case; the per-kind
+    generators in ``api/plots.py`` produce a real PNG (CB3
+    replaced the CB2 placeholder with full generators). The
+    assertion checks the engine dispatches to the per-kind
+    handler; the per-kind test suite in
+    ``test_plot_engine.py`` covers the rendering itself.
+    """
     engine = InProcessPlotEngine()
-    # The default impl returns a 1x1 placeholder PNG so the seam
-    # round-trips end-to-end before the per-kind functions land
-    # in CB3. The full per-kind coverage is in test_plot_engine.py
-    # once CB3 ships.
     response = engine.render(
-        CockpitPlotRequest(run_id="r1", kind="demand_curve")
+        CockpitPlotRequest(
+            run_id="r1",
+            kind="demand_curve",
+            params={
+                "weeks": ["W1", "W2", "W3"],
+                "actual": [1.0, 2.0, 3.0],
+                "forecast": [1.1, 1.9, 3.1],
+            },
+        )
     )
     assert response.kind == "demand_curve"
     assert response.content_type == "image/png"
-    # The placeholder bytes are valid PNG (8-byte signature).
-    assert response.bytes_b64.startswith("iVBORw0KGgo")  # base64 of PNG sig
+    assert response.bytes_b64
+    assert response.width > 0
+    assert response.height > 0
 
 
 def test_in_process_plot_engine_raises_on_unknown_kind() -> None:

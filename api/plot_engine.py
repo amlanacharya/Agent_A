@@ -36,9 +36,6 @@ Design:
 
 from __future__ import annotations
 
-import base64
-import struct
-import zlib
 from abc import ABC, abstractmethod
 
 from api.models import CockpitPlotRequest, PlotKind, PlotResponse
@@ -93,42 +90,6 @@ class PlotEngine(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Placeholder PNG (replaced by per-kind generators in CB3)
-# ---------------------------------------------------------------------------
-
-
-def _placeholder_png(width: int = 1, height: int = 1) -> bytes:
-    """Build a tiny valid PNG with the given dimensions.
-
-    The bytes are a real PNG (8-byte signature + IHDR + IDAT +
-    IEND chunks), so the cockpit can render the placeholder
-    inline before CB3 lands the per-kind generators. The
-    engine surface stays unchanged across the CB2 -> CB3
-    transition.
-    """
-    # PNG signature.
-    sig = b"\x89PNG\r\n\x1a\n"
-    # IHDR: 13 bytes (width, height, bit depth, color type, ...)
-    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data) & 0xFFFFFFFF
-    ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", ihdr_crc)
-    # IDAT: a single scanline of all-transparent RGBA pixels.
-    raw = b"\x00" + (b"\x00\x00\x00\x00" * (width * height))
-    idat_data = zlib.compress(raw, 9)
-    idat_crc = zlib.crc32(b"IDAT" + idat_data) & 0xFFFFFFFF
-    idat = (
-        struct.pack(">I", len(idat_data))
-        + b"IDAT"
-        + idat_data
-        + struct.pack(">I", idat_crc)
-    )
-    # IEND.
-    iend_crc = zlib.crc32(b"IEND") & 0xFFFFFFFF
-    iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
-    return sig + ihdr + idat + iend
-
-
-# ---------------------------------------------------------------------------
 # InProcessPlotEngine — default implementation
 # ---------------------------------------------------------------------------
 
@@ -146,21 +107,16 @@ class InProcessPlotEngine(PlotEngine):
     """
 
     def render(self, request: CockpitPlotRequest) -> PlotResponse:
-        # The full per-kind dispatch lives in CB3. Today, every
-        # kind routes to a placeholder PNG so the seam
-        # round-trips end-to-end. The kind validation is
-        # the only thing this engine does today; CB3
-        # extends it with real per-kind generators.
+        # The per-kind generators live in ``api/plots.py``. The
+        # engine is a typed dispatch seam: kind validation +
+        # routing, no plotting logic of its own. A future
+        # external renderer can drop in behind the same
+        # ``render_kind`` function.
+        from api.plots import render_kind
+
         if request.kind not in set(PlotKind.__args__):  # type: ignore[attr-defined]
             raise UnknownPlotKindError(str(request.kind))
-        png = _placeholder_png()
-        return PlotResponse(
-            kind=request.kind,  # type: ignore[arg-type]
-            content_type="image/png",
-            bytes_b64=base64.b64encode(png).decode("ascii"),
-            width=1,
-            height=1,
-        )
+        return render_kind(request)
 
 
 __all__ = (
