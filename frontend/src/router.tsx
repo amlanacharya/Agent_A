@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
 import { GenericSurfacePage } from "@/pages/SurfacePage";
 import { MissionControl } from "@/pages/MissionControl";
+import { DataHealth } from "@/pages/DataHealth";
 
 /**
  * Router — CB4's routes. CB5–CB12 add bespoke pages and slot them
@@ -24,6 +25,10 @@ export const router = createBrowserRouter([
         path: "surfaces/mission_control/:runId",
         element: <MissionControlRoute />,
       },
+      {
+        path: "surfaces/data_health/:runId",
+        element: <DataHealthRoute />,
+      },
       { path: "surfaces/:name/:runId", element: <GenericSurfacePage /> },
     ],
   },
@@ -39,4 +44,9 @@ import { useParams } from "react-router-dom";
 function MissionControlRoute(): JSX.Element {
   const { runId = "dev-run" } = useParams<{ runId: string }>();
   return <MissionControl runId={runId} />;
+}
+
+function DataHealthRoute(): JSX.Element {
+  const { runId = "dev-run" } = useParams<{ runId: string }>();
+  return <DataHealth runId={runId} />;
 }

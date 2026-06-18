@@ -79,9 +79,12 @@ describe("App router (CB4)", () => {
   });
 
   it("renders the route outlet's content (generic surface page)", async () => {
-    renderWithProviders(["/surfaces/data_health/run-42"]);
+    // Pick a surface that doesn't have a bespoke page yet (e.g.
+    // canonical_table_builder) so the GenericSurfacePage
+    // fallback renders.
+    renderWithProviders(["/surfaces/canonical_table_builder/run-42"]);
     const heading = await screen.findByRole("heading", { level: 1 });
-    expect(heading.textContent).toMatch(/data_health/);
+    expect(heading.textContent).toMatch(/canonical_table_builder/);
     expect(heading.textContent).toMatch(/run-42/);
   });
 
