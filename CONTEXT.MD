@@ -244,3 +244,13 @@ _Avoid_: Data report, model report, monitoring summary
 **Model Health**:
 One of the four recurring markdown artifacts the platform emits on a monitoring tick. Lives in `MODEL_HEALTH.md`. Surfaces the population-level MASE and bias (previous, current, signed delta) plus the per-segment degradation table. The interval calibration field is a seam — it stays `None` until the platform grows quantile support, and the report renders that absence as "not yet emitted" rather than `None` so the planner understands the gap is intentional, not a bug. The model health view is the data-scientist-facing slice of the MLOps Monitor; the monitoring report is the top-level rollup, the drift report is the data + model drift detail, the override analysis is the planner-facing slice.
 _Avoid_: Model summary, health report, MASE report
+
+### Cockpit Boundary (Phase 8)
+
+**Cockpit Surface**:
+A typed read-only view the cockpit UI consumes. One of the nine surfaces the plan calls for (Mission Control, Data Health, Canonical Table Builder, EDA Explorer, Feature Factory, Model Arena, Forecast Review, Replenishment Board, MLOps Monitor, Learning Journal). Each surface is a `CockpitSurface` implementation behind a small ABC; the `SurfaceRegistry` is the typed dispatch seam (the FastAPI router calls `registry.render(surface, run_id)` and the registry routes). The state is a free-form dict because each surface has different fields; the `SurfaceName` literal tells the UI which schema to render against. Surfaces use provider injection (cockpit state, EDA report, harness report, etc.) so production wiring reads from disk and tests pass in-memory providers.
+_Avoid_: Cockpit view, dashboard widget, page
+
+**Plot Engine**:
+The boundary between the FastAPI surface and the plot-generation code. A `PlotEngine` ABC + `InProcessPlotEngine` default; the default uses a pure-Python stdlib PNG renderer (no matplotlib, no new deps) to produce 7 plot kinds (demand curve, sparsity, anomalies, forecast band, backtest, feature importance, drift chart). The engine takes a typed `CockpitPlotRequest` and returns a typed `PlotResponse` (base64-encoded PNG bytes, content type, width, height). The ABC is the future-proof seam: a remote plotting microservice, a Jupyter rendering kernel, or a third-party charting library can drop in behind the same interface without changing the FastAPI router.
+_Avoid_: Plot generator, chart renderer, matplotlib wrapper
