@@ -25,11 +25,11 @@ Design:
   ``api.surfaces`` and ``api.plots``; the surface
   routing lives in ``SurfaceRegistry``.
 * **Typed error mapping.** A Pydantic validation error
-  is 422 (the HTTP layer does not invent the value); a
-  ``UnknownSurfaceError`` is 404; an engine-side
-  ``ValueError`` is 400; an ``UnknownPlotKindError``
-  is 422. The mapping is in one place so a future
-  error kind is a deliberate addition.
+  on the request body is 422 (the HTTP layer does not
+  invent the value); a ``UnknownSurfaceError`` is 404;
+  an engine-side ``ValueError`` is 400. The mapping is
+  in one place so a future error kind is a deliberate
+  addition.
 * **In-process by default.** The ``build_cockpit_app``
   factory takes the registry and the engine as
   arguments so tests can wire in-memory providers
@@ -39,10 +39,9 @@ Design:
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
-from pydantic import ValidationError
 
 from api.models import CockpitPlotRequest
-from api.plot_engine import PlotEngine, UnknownPlotKindError
+from api.plot_engine import PlotEngine
 from api.surfaces import SurfaceRegistry, UnknownSurfaceError
 
 
@@ -76,15 +75,16 @@ def build_cockpit_app(
 
     @app.post("/plots")
     def render_plot(request: CockpitPlotRequest) -> dict[str, object]:
-        """Render a plot via the engine."""
+        """Render a plot via the engine.
+
+        Pydantic ``Literal`` on ``CockpitPlotRequest.kind`` rejects
+        unknown kinds at the request boundary (HTTP 422), so the
+        engine never sees them. The only error the engine can
+        raise here is ``ValueError`` for missing / malformed
+        per-kind params — translated to 400.
+        """
         try:
             response = engine.render(request)
-        except UnknownPlotKindError as exc:
-            # Pydantic Literal already catches unknown kinds at
-            # the request level (HTTP 422), so this branch is
-            # defensive — engine-side validation can still
-            # raise if a future engine adds stricter checks.
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ValueError as exc:
             # Engine-side param validation (missing / malformed
             # per-kind params). 400 is the right code: the

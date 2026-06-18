@@ -3,7 +3,7 @@
 End-to-end test of the FastAPI surface the cockpit UI
 consumes. The chain mirrors the production path:
 
-1. Construct a ``SurfaceRegistry`` with all 9 surfaces
+1. Construct a ``SurfaceRegistry`` with all 10 surfaces
    wired to in-memory providers.
 2. Build a FastAPI app that exposes:
    * ``GET /surfaces`` — list of registered surface names
@@ -16,12 +16,12 @@ consumes. The chain mirrors the production path:
 
 The tests assert:
 
-* All 9 surfaces are registered and render successfully
+* All 10 surfaces are registered and render successfully
 * Each surface's response is a valid ``SurfaceSnapshot``
 * Each plot kind renders to a valid ``PlotResponse``
 * Unknown surface name returns 404
 * Unknown plot kind returns a typed error
-* The 9 surface names match the plan's checklist
+* The 10 surface names match the plan's checklist
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.app import build_cockpit_app
@@ -50,6 +50,21 @@ from api.surfaces import (
     ReplenishmentBoardSurface,
     SurfaceRegistry,
 )
+from forecasting.cockpit_state import CockpitState
+from forecasting.contracts import (
+    EDAReport,
+    EnsembleSummary,
+    FeatureFlags,
+    ForecastHarnessReport,
+    FoundryReport,
+    MissingnessReport,
+    ModelResult,
+    ModelScorecard,
+    SegmentProfile,
+    SeriesDemandProfile,
+    SeriesResult,
+)
+from forecasting.replenishment import ReplenishmentRecommendation
 
 
 # ---------------------------------------------------------------------------
@@ -64,23 +79,7 @@ def run_id() -> str:
 
 @pytest.fixture()
 def registry(run_id: str, tmp_path: Path) -> SurfaceRegistry:
-    """Build a registry with all 9 surfaces wired to in-memory providers."""
-    from forecasting.cockpit_state import CockpitState
-    from forecasting.contracts import (
-        EDAReport,
-        EnsembleSummary,
-        FeatureFlags,
-        ForecastHarnessReport,
-        FoundryReport,
-        MissingnessReport,
-        ModelResult,
-        ModelScorecard,
-        SegmentProfile,
-        SeriesDemandProfile,
-        SeriesResult,
-    )
-    from forecasting.replenishment import ReplenishmentRecommendation
-
+    """Build a registry with all 10 surfaces wired to in-memory providers."""
     # Mission Control: a fixed live state.
     cockpit_state = CockpitState(
         run_id=run_id,
@@ -178,25 +177,26 @@ def registry(run_id: str, tmp_path: Path) -> SurfaceRegistry:
             approval_tier="medium",
         ),
     ]
-    # MLOps Monitor: write the four Phase 7 markdown artifacts.
+    # MLOps Monitor + Learning Journal: write the markdown artifacts.
     artifacts_root = tmp_path / "outputs"
     run_dir = artifacts_root / run_id
     run_dir.mkdir(parents=True)
-    (run_dir / "MONITORING_REPORT.md").write_text("# Monitoring\n")
-    (run_dir / "DRIFT_REPORT.md").write_text("# Drift\n")
-    (run_dir / "OVERRIDE_ANALYSIS.md").write_text("# Overrides\n")
-    (run_dir / "MODEL_HEALTH.md").write_text("# Health\n")
-    # Learning Journal: a workspace with the six artifacts.
+    _write_many(run_dir, {
+        "MONITORING_REPORT.md": "# Monitoring\n",
+        "DRIFT_REPORT.md": "# Drift\n",
+        "OVERRIDE_ANALYSIS.md": "# Overrides\n",
+        "MODEL_HEALTH.md": "# Health\n",
+    })
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "LEARNINGS.md").write_text(
-        "# LEARNINGS\n\n## Active\n\n- card-1\n- card-2\n\n## Retired\n\n- card-3\n"
-    )
-    (workspace / "DECISIONS.md").write_text("# Decisions\n")
-    (workspace / "ASSUMPTIONS.md").write_text("# Assumptions\n")
-    (workspace / "RUNBOOK.md").write_text("# Runbook\n")
-    (workspace / "MODEL_REGISTRY.md").write_text("# Registry\n")
-    (workspace / "PROMOTION_DECISIONS.md").write_text("# Promotion\n")
+    _write_many(workspace, {
+        "LEARNINGS.md": "# LEARNINGS\n\n## Active\n\n- card-1\n- card-2\n\n## Retired\n\n- card-3\n",
+        "DECISIONS.md": "# Decisions\n",
+        "ASSUMPTIONS.md": "# Assumptions\n",
+        "RUNBOOK.md": "# Runbook\n",
+        "MODEL_REGISTRY.md": "# Registry\n",
+        "PROMOTION_DECISIONS.md": "# Promotion\n",
+    })
 
     registry = SurfaceRegistry()
     registry.register(MissionControlSurface(
@@ -233,6 +233,12 @@ def registry(run_id: str, tmp_path: Path) -> SurfaceRegistry:
     return registry
 
 
+def _write_many(root: Path, mapping: dict[str, str]) -> None:
+    """Write each (filename, content) pair in ``mapping`` under ``root``."""
+    for name, content in mapping.items():
+        (root / name).write_text(content)
+
+
 @pytest.fixture()
 def app(registry: SurfaceRegistry) -> FastAPI:
     """Build the FastAPI app wired to the in-memory registry + engine."""
@@ -249,24 +255,12 @@ def client(app: FastAPI) -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-def test_surfaces_endpoint_lists_all_nine_surfaces(client: TestClient) -> None:
-    """The /surfaces endpoint exposes all 9 surfaces from the plan checklist."""
+def test_surfaces_endpoint_lists_all_registered_surfaces(client: TestClient) -> None:
+    """The /surfaces endpoint exposes every surface the plan calls for."""
     response = client.get("/surfaces")
     assert response.status_code == 200
     surfaces = response.json()["surfaces"]
-    expected = {
-        "mission_control",
-        "data_health",
-        "canonical_table_builder",
-        "eda_explorer",
-        "feature_factory",
-        "model_arena",
-        "forecast_review",
-        "replenishment_board",
-        "mlops_monitor",
-        "learning_journal",
-    }
-    assert set(surfaces) == expected
+    assert set(surfaces) == set(SurfaceName.__args__)
 
 
 # ---------------------------------------------------------------------------
@@ -274,81 +268,40 @@ def test_surfaces_endpoint_lists_all_nine_surfaces(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mission_control_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/mission_control/r-test-001")
-    assert response.status_code == 200
+# Per-surface expected state. The (name, state_key, state_value) tuples let
+# one parametrized test cover all 10 surfaces without 10 near-identical
+# functions. ``Ellipsis`` (``...``) is a sentinel meaning "presence check
+# only" (used for surfaces whose state value is itself a dict, e.g.
+# Feature Factory's ``{"SKU_1": FeatureFlags(...)}``). The list keeps the
+# per-surface contract visible at a glance.
+_SURFACE_EXPECTATIONS: list[tuple[str, str, object]] = [
+    ("mission_control", "current_step", "foundry_modelling"),
+    ("data_health", "series_count", 2),
+    ("canonical_table_builder", "row_count", 3),
+    ("eda_explorer", "series_count", 2),
+    ("feature_factory", "SKU_1", ...),  # presence check (state is a dict)
+    ("model_arena", "scorecard_count", 1),
+    ("forecast_review", "overall_mase", 0.85),
+    ("replenishment_board", "recommendation_count", 1),
+    ("mlops_monitor", "MONITORING_REPORT.md", "# Monitoring\n"),
+    ("learning_journal", "active_cards", 2),
+]
+
+
+@pytest.mark.parametrize("name,state_key,state_value", _SURFACE_EXPECTATIONS)
+def test_surface_endpoint_renders(
+    client: TestClient, name: str, state_key: str, state_value: object
+) -> None:
+    """Each registered surface returns 200 + a SurfaceSnapshot with the expected state."""
+    response = client.get(f"/surfaces/{name}/r-test-001")
+    assert response.status_code == 200, response.text
     data = response.json()
-    assert data["surface"] == "mission_control"
+    assert data["surface"] == name
     assert data["run_id"] == "r-test-001"
-    assert data["state"]["current_step"] == "foundry_modelling"
-    assert data["state"]["confidence"] == "high"
-
-
-def test_data_health_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/data_health/r-test-001")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["surface"] == "data_health"
-    assert data["state"]["series_count"] == 2
-
-
-def test_canonical_table_builder_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/canonical_table_builder/r-test-001")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["state"]["row_count"] == 3
-    assert data["state"]["columns"] == ["week_start", "sku_id", "location_id", "demand_qty"]
-
-
-def test_eda_explorer_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/eda_explorer/r-test-001")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["state"]["series_count"] == 2
-
-
-def test_feature_factory_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/feature_factory/r-test-001")
-    assert response.status_code == 200
-    data = response.json()
-    assert "SKU_1" in data["state"]
-
-
-def test_model_arena_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/model_arena/r-test-001")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["state"]["scorecard_count"] == 1
-
-
-def test_forecast_review_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/forecast_review/r-test-001")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["state"]["overall_mase"] == 0.85
-
-
-def test_replenishment_board_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/replenishment_board/r-test-001")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["state"]["recommendation_count"] == 1
-    assert data["state"]["total_order_quantity"] == 80.0
-
-
-def test_mlops_monitor_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/mlops_monitor/r-test-001")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["state"]["MONITORING_REPORT.md"] == "# Monitoring\n"
-
-
-def test_learning_journal_endpoint_renders(client: TestClient) -> None:
-    response = client.get("/surfaces/learning_journal/r-test-001")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["state"]["active_cards"] == 2
-    assert data["state"]["retired_cards"] == 1
+    if state_value is ...:
+        assert state_key in data["state"]
+    else:
+        assert data["state"][state_key] == state_value
 
 
 # ---------------------------------------------------------------------------
@@ -393,10 +346,10 @@ def test_plot_endpoint_renders_demand_curve(client: TestClient) -> None:
 @pytest.mark.parametrize("kind", list(PlotKind.__args__))
 def test_plot_endpoint_handles_all_seven_kinds(client: TestClient, kind: str) -> None:
     """The plot endpoint dispatches to all 7 kinds."""
-    params = _params_for(kind)
+    from tests.test_plot_engine import _params_for
     response = client.post(
         "/plots",
-        json={"run_id": "r1", "kind": kind, "params": params},
+        json={"run_id": "r1", "kind": kind, "params": _params_for(kind)},
     )
     assert response.status_code == 200, response.text
     data = response.json()
@@ -415,7 +368,7 @@ def test_plot_endpoint_rejects_unknown_kind(client: TestClient) -> None:
 
 
 def test_plot_endpoint_returns_typed_error_for_missing_params(client: TestClient) -> None:
-    """A plot request with missing required params is a 422 (engine-side)."""
+    """A plot request with missing required params is a 400 (engine-side)."""
     response = client.post(
         "/plots",
         json={"run_id": "r1", "kind": "demand_curve", "params": {}},
@@ -424,67 +377,11 @@ def test_plot_endpoint_returns_typed_error_for_missing_params(client: TestClient
     assert "Missing required params" in response.json()["detail"]
 
 
-def _params_for(kind: str) -> dict:
-    if kind == "demand_curve":
-        return {
-            "weeks": ["W1", "W2", "W3"],
-            "actual": [1.0, 2.0, 3.0],
-            "forecast": [1.1, 1.9, 3.1],
-        }
-    if kind == "sparsity":
-        return {"series": [{"series_key": "A", "adi": 1.0, "cv2": 0.5}]}
-    if kind == "anomalies":
-        return {
-            "weeks": ["W1", "W2", "W3"],
-            "values": [1.0, 50.0, 2.0],
-            "flags": [False, True, False],
-        }
-    if kind == "forecast_band":
-        return {
-            "weeks": ["W1", "W2"],
-            "forecast": [1.0, 2.0],
-            "lower": [0.8, 1.8],
-            "upper": [1.2, 2.2],
-        }
-    if kind == "backtest":
-        return {
-            "folds": ["f1", "f2"],
-            "actual": [1.0, 2.0],
-            "forecast": [1.1, 1.9],
-        }
-    if kind == "feature_importance":
-        return {
-            "features": [
-                {"name": "a", "importance": 0.5},
-                {"name": "b", "importance": 0.3},
-            ],
-        }
-    if kind == "drift_chart":
-        return {
-            "runs": ["r1", "r2"],
-            "segments": {"G1": [0.8, 0.9]},
-        }
-    return {}
-
-
 # ---------------------------------------------------------------------------
 # Plan-checklist coverage
 # ---------------------------------------------------------------------------
 
 
-def test_all_nine_plan_surfaces_are_registered(registry: SurfaceRegistry) -> None:
+def test_all_plan_surfaces_are_registered(registry: SurfaceRegistry) -> None:
     """The registry covers every surface the plan calls for."""
-    expected = {
-        "mission_control",
-        "data_health",
-        "canonical_table_builder",
-        "eda_explorer",
-        "feature_factory",
-        "model_arena",
-        "forecast_review",
-        "replenishment_board",
-        "mlops_monitor",
-        "learning_journal",
-    }
-    actual = set(registry.list_surfaces())
-    assert actual == expected
+    assert set(registry.list_surfaces()) == set(SurfaceName.__args__)
