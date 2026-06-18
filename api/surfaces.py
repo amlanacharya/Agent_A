@@ -54,7 +54,14 @@ from api.models import SurfaceName, SurfaceSnapshot
 
 if TYPE_CHECKING:
     import pandas as pd
-    from forecasting.contracts import EDAReport, SegmentMap
+    from forecasting.contracts import (
+        EDAReport,
+        FeatureFlags,
+        ForecastHarnessReport,
+        FoundryReport,
+        SegmentMap,
+        SeriesDemandProfile,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +251,22 @@ The provider takes a ``run_id`` and returns the
 yet assigned.
 """
 
+FeatureFlagsProvider = Callable[[str], "dict[str, FeatureFlags] | None"]
+"""Type alias for the per-series FeatureFlags provider.
+
+Returns a ``{series_key: FeatureFlags}`` dict, or
+``None`` if the run has not yet built feature flags.
+"""
+
+SeriesProfilesProvider = Callable[[str], "list[SeriesDemandProfile] | None"]
+"""Type alias for the per-series EDA profile provider."""
+
+HarnessReportProvider = Callable[[str], "ForecastHarnessReport | None"]
+"""Type alias for the Phase 4 forecast harness report provider."""
+
+FoundryReportProvider = Callable[[str], "FoundryReport | None"]
+"""Type alias for the Phase 4 Foundry report provider."""
+
 
 class DataHealthSurface(CockpitSurface):
     """The Data Health surface — the Phase 2 EDA report summary.
@@ -361,6 +384,182 @@ class CanonicalTableBuilderSurface(CockpitSurface):
         )
 
 
+class EdaExplorerSurface(CockpitSurface):
+    """The EDA Explorer surface — per-series EDA drill-down.
+
+    Surfaces the ``series_profiles`` from the Phase 2
+    EDA report (per-series ADI / CV² / trend /
+    seasonality / demand class) plus the union
+    demand-class distribution. The cockpit's EDA
+    Explorer lets the planner drill into one series
+    at a time.
+    """
+
+    surface: SurfaceName = "eda_explorer"
+
+    def __init__(self, *, eda_report_provider: EDAReportProvider) -> None:
+        self._eda_report_provider = eda_report_provider
+
+    def render(self, run_id: str) -> SurfaceSnapshot:
+        report = self._eda_report_provider(run_id)
+        if report is None:
+            return SurfaceSnapshot(
+                run_id=run_id,
+                surface="eda_explorer",
+                state={
+                    "series_count": 0,
+                    "series_profiles": [],
+                    "demand_class_distribution": {},
+                },
+            )
+        demand_class_distribution: dict[str, int] = {}
+        for profile in report.segment_profiles:
+            for sb_class, count in profile.demand_class_distribution.items():
+                demand_class_distribution[sb_class] = (
+                    demand_class_distribution.get(sb_class, 0) + count
+                )
+        return SurfaceSnapshot(
+            run_id=run_id,
+            surface="eda_explorer",
+            state={
+                "series_count": len(report.series_profiles),
+                "series_profiles": [
+                    profile.model_dump() for profile in report.series_profiles
+                ],
+                "demand_class_distribution": demand_class_distribution,
+            },
+        )
+
+
+class FeatureFactorySurface(CockpitSurface):
+    """The Feature Factory surface — per-series FeatureFlags + recommendations.
+
+    Surfaces the per-series ``FeatureFlags`` (which
+    feature families are enabled) plus the
+    recommended-models list per series. The cockpit's
+    Feature Factory widget shows the config + a link
+    to the feature-importance chart.
+    """
+
+    surface: SurfaceName = "feature_factory"
+
+    def __init__(
+        self,
+        *,
+        feature_flags_provider: FeatureFlagsProvider,
+        series_profiles_provider: SeriesProfilesProvider | None = None,
+    ) -> None:
+        self._feature_flags_provider = feature_flags_provider
+        self._series_profiles_provider = series_profiles_provider
+
+    def render(self, run_id: str) -> SurfaceSnapshot:
+        flags = self._feature_flags_provider(run_id) or {}
+        state: dict[str, Any] = {
+            series_key: flags[series_key].model_dump()
+            for series_key in flags
+        }
+        if self._series_profiles_provider is not None:
+            profiles = self._series_profiles_provider(run_id) or []
+            state["recommended_models_per_series"] = {
+                profile.series_key: list(profile.recommended_models)
+                for profile in profiles
+            }
+        return SurfaceSnapshot(
+            run_id=run_id,
+            surface="feature_factory",
+            state=state,
+        )
+
+
+class ModelArenaSurface(CockpitSurface):
+    """The Model Arena surface — the Phase 4 forecast harness leaderboard.
+
+    Surfaces the per-model scorecards (model_family,
+    series_key, mase, bias), the ensemble weights, the
+    frequently-promoted list, and the never-surfaced
+    list (fit-failed families). The cockpit's Model
+    Arena is the per-run leaderboard the planner reads
+    when deciding which model to promote.
+    """
+
+    surface: SurfaceName = "model_arena"
+
+    def __init__(self, *, harness_report_provider: HarnessReportProvider) -> None:
+        self._harness_report_provider = harness_report_provider
+
+    def render(self, run_id: str) -> SurfaceSnapshot:
+        report = self._harness_report_provider(run_id)
+        if report is None or report.ensemble is None:
+            return SurfaceSnapshot(
+                run_id=run_id,
+                surface="model_arena",
+                state={
+                    "scorecard_count": 0,
+                    "scorecards": [],
+                    "ensemble_weights": {},
+                    "frequently_promoted": [],
+                    "never_surfaced": [],
+                },
+            )
+        return SurfaceSnapshot(
+            run_id=run_id,
+            surface="model_arena",
+            state={
+                "scorecard_count": len(report.scorecards),
+                "scorecards": [
+                    card.model_dump() for card in report.scorecards
+                ],
+                "ensemble_weights": dict(report.ensemble.weights),
+                "frequently_promoted": list(
+                    report.ensemble.frequently_promoted
+                ),
+                "never_surfaced": list(report.ensemble.never_surfaced),
+            },
+        )
+
+
+class ForecastReviewSurface(CockpitSurface):
+    """The Forecast Review surface — the per-series Phase 4 forecast outcome.
+
+    Surfaces the per-series ``SeriesResult`` (best
+    model, MASE target, target met, demand class) plus
+    the overall MASE / target-met fraction and the
+    Foundry narrative. The cockpit's Forecast Review
+    is the planner's per-series drill-down.
+    """
+
+    surface: SurfaceName = "forecast_review"
+
+    def __init__(self, *, foundry_report_provider: FoundryReportProvider) -> None:
+        self._foundry_report_provider = foundry_report_provider
+
+    def render(self, run_id: str) -> SurfaceSnapshot:
+        report = self._foundry_report_provider(run_id)
+        if report is None:
+            return SurfaceSnapshot(
+                run_id=run_id,
+                surface="forecast_review",
+                state={
+                    "overall_mase": 0.0,
+                    "target_met_fraction": 0.0,
+                    "series_results": [],
+                    "narrative": "",
+                },
+            )
+        return SurfaceSnapshot(
+            run_id=run_id,
+            surface="forecast_review",
+            state={
+                "overall_mase": report.overall_mase,
+                "target_met_fraction": report.target_met_fraction,
+                "series_results": [
+                    result.model_dump() for result in report.series_results
+                ],
+                "narrative": report.narrative,
+            },
+        )
+
+
 class SurfaceRegistry:
     """The typed dispatch seam for cockpit surfaces.
 
@@ -401,10 +600,18 @@ __all__ = (
     "CockpitStateProvider",
     "DataHealthSurface",
     "DuplicateSurfaceError",
+    "EdaExplorerSurface",
     "EDAReportProvider",
+    "FeatureFactorySurface",
+    "FeatureFlagsProvider",
+    "ForecastReviewSurface",
+    "FoundryReportProvider",
+    "HarnessReportProvider",
     "MissionControlSurface",
     "MlopsMonitorSurface",
+    "ModelArenaSurface",
     "SegmentMapProvider",
+    "SeriesProfilesProvider",
     "SurfaceError",
     "SurfaceRegistry",
     "UnknownSurfaceError",
