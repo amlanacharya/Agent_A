@@ -65,14 +65,11 @@ function renderWithProviders(initialEntries: string[] = ["/"]): ReturnType<typeo
 
 describe("App router (CB4)", () => {
   it("renders the default Mission Control surface directly", async () => {
-    // Skipping the redirect test: react-router's <Navigate> races
-    // with the findByRole polling in jsdom + the abort signal
-    // mismatch the contract test surfaces. Visiting the resolved
-    // URL directly exercises the same code path more deterministically.
+    // The Mission Control route is wired in CB5 with a bespoke
+    // page. The h1 is the PageHeader's title: `Run {runId}`.
     renderWithProviders(["/surfaces/mission_control/dev-run"]);
     const heading = await screen.findByRole("heading", { level: 1 });
-    expect(heading.textContent).toMatch(/mission_control/);
-    expect(heading.textContent).toMatch(/dev-run/);
+    expect(heading.textContent).toMatch(/Run dev-run/);
   });
 
   it("renders the AppShell top nav with the brand mark", async () => {
