@@ -238,35 +238,20 @@ The platform's own native layer for: (1) detecting data and model drift on a rec
 
 ### Phase 8: Data Intelligence Cockpit
 
-- [ ] Build cockpit surfaces:
-  - Mission Control
-  - Data Health
-  - Canonical Table Builder
-  - EDA Explorer
-  - Feature Factory
-  - Model Arena
-  - Forecast Review
-  - Replenishment Board
-  - MLOps Monitor
-  - Learning Journal
-- [x] Show live platform state:
-  - current agent step
-  - tool result
-  - code escalation status
-  - attempt count
-  - verifier gate
-  - approval needed
-  - confidence and blockers
-- [ ] Make plots available on demand:
-  - demand curves
-  - sparsity
-  - anomalies
-  - forecast bands
-  - backtests
-  - feature importance
-  - drift charts
+The platform's own native layer for: (1) a typed FastAPI surface the cockpit UI consumes, (2) a pure-function plot generation engine for the seven plot kinds the plan calls for, and (3) thin "surface" wiring that aggregates the existing platform's data into the nine cockpit views (Mission Control, Data Health, Canonical Table Builder, EDA Explorer, Feature Factory, Model Arena, Forecast Review, Replenishment Board, MLOps Monitor, Learning Journal). The cockpit UI is the surface the planner interacts with; the in-process FastAPI endpoints and plot generators are the engine. The boundary is deliberately kept behind small seams (the typed response models in `api/models.py`, the `PlotEngine` ABC, the per-surface routers) so a future external plotting service or web frontend can plug in behind the same surface without changing the rest of the platform.
 
-> ⚠️ **Phase 8 partial.** Live state model (`cockpit_state.py`) is complete — all 7 live state fields implemented with `to_public_dict()`, `with_blocker()`, `mark_approval_needed()`. No UI surfaces or plot generation implemented yet.
+**What this repo ships (Phase 8 in-repo):**
+
+- [ ] CB1 — rewrite the Phase 8 section in this plan to make the in-repo / out-of-repo split explicit.
+- [ ] CB2 — typed FastAPI request/response models in `api/models.py` (CockpitPlotRequest, PlotResponse, SurfaceSnapshot, and the surface-specific request shapes); plus `PlotEngine` ABC + `InProcessPlotEngine` adapter following the Phase 6/7 seam pattern.
+- [ ] CB3 — plot generation engine: 7 plot kinds as pure functions (demand curve, sparsity, anomalies, forecast band, backtest, feature importance, drift chart). PNG bytes out via the engine; the engine takes a typed request and returns a typed `PlotResponse`.
+- [ ] CB4 — Mission Control + MLOps Monitor surfaces: Mission Control reads `CockpitState` (Phase 8 partial already shipped); MLOps Monitor reads the four Phase 7 markdown artifacts from `outputs/{run_id}/`.
+- [ ] CB5 — Data Health + Canonical Table Builder surfaces: Data Health reads the Phase 2 `EDAReport`; Canonical Table Builder reads the canonical DataFrame head + row count + segment list.
+- [ ] CB6 — EDA Explorer + Feature Factory + Model Arena + Forecast Review surfaces: thin aggregators over the existing engine outputs (no new business logic — same pattern as Phase 6 CB4's scheduler).
+- [ ] CB7 — Replenishment Board + Learning Journal surfaces: Replenishment Board reads the latest `ReplenishmentRecommendation`s; Learning Journal reads the workspace markdown.
+- [ ] CB8 — full-chain cockpit integration test (FastAPI TestClient end-to-end across all 9 surfaces), tick Phase 8 plan, mark complete, add glossary terms (`Cockpit Surface`, `Plot Engine`).
+
+**Future external integrations:** an alternative `PlotEngine` implementation (a remote plotting microservice, a Jupyter rendering kernel, a third-party charting library) can plug in behind the same `PlotEngine` interface without changing the FastAPI surface. The cockpit UI and the nine surface routers stay unchanged. Today's deployment uses the in-process implementation; the seam exists for the day the team chooses to add a real external rendering service, not because one is planned. The web frontend (HTML / React / Vue) is a separate workstream that consumes the same FastAPI surface; this repo ships the surface and the typed contracts, not the frontend.
 
 ## Hard Rules
 
