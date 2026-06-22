@@ -1368,3 +1368,55 @@ class MonitorSnapshot(BaseModel):
     data: DataDriftReport
     model: ModelDriftReport
     business: BusinessOutcomesReport
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — Cockpit driver types
+# ---------------------------------------------------------------------------
+
+
+PossibilityKind = Literal["ACCEPT", "OVERRIDE", "CLARIFY"]
+
+
+class Possibility(BaseModel):
+    """One accepted possibility the cockpit renders as a clickable chip.
+
+    The Conductor returns a list of these alongside every chat reply
+    (see ``ConductorStepResult.possibilities`` below). Each possibility
+    carries the kind (so the cockpit knows whether clicking it should
+    ACCEPT, OVERRIDE, or CLARIFY), a human-readable label (rendered
+    as the chip text), and an arbitrary payload that the chat-loop
+    endpoint passes back into the conductor on click.
+
+    Today the list is closed at the conductor boundary; new
+    PossibilityKinds land in Phase 10.x with the LLM-driven Meridian.
+    """
+
+    kind: PossibilityKind
+    label: str
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
+class ConductorStepResult(BaseModel):
+    """The typed result of one ``Conductor.drive_run_to_<phase>`` call.
+
+    Carries everything the cockpit needs to render the next step:
+
+    * ``reply`` — the chat-bubble text (Meridian's prompt, the
+      conductor's "advanced to forge_eda" notice, or an empty
+      string for silent advances).
+    * ``possibilities`` — the chips the cockpit shows next to the
+      reply text. Empty when the phase advance is silent.
+    * ``advanced_to`` — the new Phase (== ``state.phase``).
+    * ``state`` — the full updated ``RunState`` (the cockpit can
+      overwrite its cached copy rather than re-fetching).
+
+    Lives in ``contracts.py`` because the cockpit consumes it
+    via the FastAPI surface and the type-home convention is
+    documented in CONTEXT.MD.
+    """
+
+    reply: str = ""
+    possibilities: list[Possibility] = Field(default_factory=list)
+    advanced_to: str
+    state: "RunState | None" = None

@@ -103,6 +103,11 @@ graphify-out/
 backend/forecasting/graphify-out/
 platform-explorer.html
 
+# Tool runtime artifacts (Playwright MCP/CLI sessions, throwaway outputs)
+.playwright-cli/
+.playwright-mcp/
+output/
+
 # Frontend (Phase 9)
 frontend/dist/
 frontend/node_modules/
