@@ -56,7 +56,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from api.models import CockpitPlotRequest
+from api.models import CockpitPlotRequest, MessageRequest
 from api.plot_engine import PlotEngine
 from api.surfaces import SurfaceRegistry, UnknownSurfaceError
 
@@ -256,6 +256,217 @@ def build_cockpit_app(
             "preflight": bundle.model_dump(mode="json"),
             "state": cockpit_state.to_public_dict(),
         }
+
+    @app.post("/messages")
+    def post_message(request: MessageRequest) -> dict[str, object]:
+        """Chat-loop dispatch — Phase 10 CB3.
+
+        The cockpit's chat box posts here. The route:
+
+        1. Loads the run's ``RunState`` (404 if missing).
+        2. Loads the conversation history from
+           ``outputs/{run_id}/obs_log.json`` via
+           ``conductor.load_lens_conversation_history``.
+        3. Calls ``Lens.classify_intent`` to classify the user's
+           message into one of the six intent kinds.
+        4. Dispatches to the Conductor (or ``conductor_tools``) based
+           on the intent and returns the typed ``ConductorStepResult``
+           (or a tailored prism-clone payload for WHAT_IF_REQUEST).
+
+        Error mapping:
+
+        * Run not found -> 404
+        * CORRECTION outside ``meridian_scoping`` -> 422
+        * ``LensResponseError`` (malformed classifier output) -> 502
+        * LifecycleError (illegal phase advance) -> 400
+        """
+        # Backend imports are deferred to here (same rationale as the
+        # ``/uploads`` route — keep read endpoints importable in
+        # environments without the ``forecasting`` package on PYTHONPATH).
+        from forecasting.agents.lens import LensInput, classify_intent
+        from forecasting.agents.lens import LensResponseError
+        from forecasting.conductor import (
+            Conductor,
+            load_lens_conversation_history,
+        )
+        from forecasting.run_state import (
+            LifecycleError,
+            Phase,
+            load_run_state,
+        )
+
+        try:
+            state = load_run_state(request.run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"run '{request.run_id}' not found",
+            ) from exc
+
+        history = load_lens_conversation_history(root, request.run_id)
+        try:
+            lens_input = LensInput(
+                conversation_history=history,
+                user_message=request.user_message,
+                pipeline_state=state,
+            )
+            intent = classify_intent(lens_input)
+        except LensResponseError as exc:
+            # The Lens classifier returned malformed JSON / wrong
+            # shape. 502 is the right code: the upstream (LLM)
+            # returned an unusable response.
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        conductor = Conductor(
+            run_id=request.run_id,
+            outputs_root=root,
+        )
+
+        # Dispatch on the typed intent. Each branch returns the
+        # response payload the cockpit consumes; we keep the
+        # response shapes uniform (intent, run_id, reply,
+        # possibilities) and add intent-specific extras
+        # (``advanced_to``, ``state``, ``prism_run_id``).
+        if intent.intent == "SCOPE_RESPONSE":
+            result = conductor.record_scope_response(request.user_message)
+            return {
+                "intent": intent.intent,
+                "run_id": request.run_id,
+                "reply": result.reply,
+                "possibilities": [p.model_dump(mode="json") for p in result.possibilities],
+                "advanced_to": result.advanced_to,
+                "state": result.state.model_dump(mode="json") if result.state else None,
+            }
+
+        if intent.intent == "OVERRIDE":
+            # Log the override as a USER_OVERRIDE_ACCEPTED claim so
+            # the audit trail captures it. The reply is plain; no
+            # possibility chips for an override.
+            result = conductor.record_override(request.user_message)
+            return {
+                "intent": intent.intent,
+                "run_id": request.run_id,
+                "reply": result.reply,
+                "possibilities": [p.model_dump(mode="json") for p in result.possibilities],
+                "advanced_to": result.advanced_to,
+                "state": result.state.model_dump(mode="json") if result.state else None,
+            }
+
+        if intent.intent == "ADVANCE_PIPELINE":
+            # Pick the next drive method based on the current phase.
+            # Phase transitions are PREFLIGHT→MERIDIAN_SCOPING→
+            # FORGE_EDA→FOUNDRY_MODELLING→REPORT_READY.
+            current_phase = state.phase
+            if isinstance(current_phase, Phase):
+                current_phase_value = current_phase.value
+            else:
+                current_phase_value = current_phase
+
+            advance_map = {
+                "preflight": conductor.drive_run_to_meridian,
+                "meridian_scoping": conductor.drive_run_to_forge,
+                "forge_eda": conductor.drive_run_to_foundry,
+                "foundry_modelling": conductor.drive_run_to_report,
+            }
+            drive = advance_map.get(current_phase_value)
+            if drive is None:
+                # Already at REPORT_READY (or HALTED) — nothing to advance.
+                return {
+                    "intent": intent.intent,
+                    "run_id": request.run_id,
+                    "reply": (
+                        f"Run is already at phase {current_phase_value}; "
+                        "no further advance is possible."
+                    ),
+                    "possibilities": [],
+                    "advanced_to": current_phase_value,
+                    "state": state.model_dump(mode="json"),
+                }
+            try:
+                result = drive(state)
+            except LifecycleError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {
+                "intent": intent.intent,
+                "run_id": request.run_id,
+                "reply": result.reply,
+                "possibilities": [p.model_dump(mode="json") for p in result.possibilities],
+                "advanced_to": result.advanced_to,
+                "state": result.state.model_dump(mode="json") if result.state else None,
+            }
+
+        if intent.intent == "CLARIFICATION":
+            # Low-confidence CLARIFICATION (per plan: < 0.6) gets the
+            # two-option clarification reply. Anything at-or-above
+            # 0.6 falls through to a single "I'll proceed" ack.
+            if intent.confidence < 0.6:
+                result = conductor.author_clarification(request.user_message)
+                return {
+                    "intent": intent.intent,
+                    "run_id": request.run_id,
+                    "reply": result.reply,
+                    "possibilities": [p.model_dump(mode="json") for p in result.possibilities],
+                    "state": result.state.model_dump(mode="json") if result.state else None,
+                }
+            return {
+                "intent": intent.intent,
+                "run_id": request.run_id,
+                "reply": f"Got it: \"{request.user_message}\". I'll proceed.",
+                "possibilities": [],
+            }
+
+        if intent.intent == "CORRECTION":
+            # Per the plan, CORRECTION is only valid in
+            # meridian_scoping. Outside that phase the cockpit
+            # shouldn't surface the correction affordance, but if it
+            # does we reject the request loudly.
+            current_phase = state.phase
+            current_phase_value = (
+                current_phase.value if isinstance(current_phase, Phase)
+                else current_phase
+            )
+            if current_phase_value != Phase.MERIDIAN_SCOPING.value:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"CORRECTION only valid in meridian_scoping; "
+                        f"run is at {current_phase_value}"
+                    ),
+                )
+            result = conductor.record_correction(request.user_message)
+            return {
+                "intent": intent.intent,
+                "run_id": request.run_id,
+                "reply": result.reply,
+                "possibilities": [p.model_dump(mode="json") for p in result.possibilities],
+                "advanced_to": result.advanced_to,
+                "state": result.state.model_dump(mode="json") if result.state else None,
+            }
+
+        if intent.intent == "WHAT_IF_REQUEST":
+            # Delegate to conductor_tools.create_prism_run which
+            # creates the whatif directory and returns a whatif_id.
+            scenario = intent.entities.scenario or request.user_message
+            prism = conductor._conductor_tools.create_prism_run(  # noqa: SLF001
+                request.run_id,
+                scenario_description=scenario,
+                entities=intent.entities.model_dump(mode="python"),
+            )
+            return {
+                "intent": intent.intent,
+                "run_id": request.run_id,
+                "reply": "Scenario run created — open it from the run selector.",
+                "possibilities": [],
+                "prism_run_id": prism["whatif_id"],
+            }
+
+        # Exhaustiveness fallback — a future IntentType addition
+        # that the route doesn't handle yet is a bug; refuse
+        # loudly.
+        raise HTTPException(
+            status_code=500,
+            detail=f"unhandled intent kind: {intent.intent}",
+        )
 
     return app
 

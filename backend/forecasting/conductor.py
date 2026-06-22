@@ -44,11 +44,15 @@ sureMASE`` and the PlotEngine ABC.
 from __future__ import annotations
 
 import json
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
 from forecasting.contracts import (
+    Claim,
+    ClaimLedger,
     ConductorStepResult,
     EDAReport,
     EnsembleSummary,
@@ -298,8 +302,164 @@ class Conductor:
         )
 
     # ------------------------------------------------------------------
+    # Chat-loop entry points — called by ``POST /messages`` after
+    # ``Lens.classify_intent`` picks an intent. The dispatch logic
+    # lives in the HTTP route; these methods are the typed
+    # conductor-side handlers for each non-advance intent.
+    # ------------------------------------------------------------------
+
+    def record_scope_response(
+        self,
+        user_message: str,
+    ) -> ConductorStepResult:
+        """Persist the user's scoping answer as a Claim and ask the next question.
+
+        The chat-loop payload (Lens entities + raw_quote) is folded into
+        the Claim's ``applies_to`` and ``evidence_ref`` so the cockpit
+        audit panel can show what the user said, when, and where it
+        applied. The reply is templated because the agentic Meridian
+        LLM call lands in Phase 10.x — the first cut just acknowledges
+        the answer and invites the next one.
+        """
+        claim = Claim(
+            claim_id=str(uuid.uuid4()),
+            claim=user_message,
+            verification_status="USER_OVERRIDE_ACCEPTED",
+            evidence_type="user_confirmed",
+            applies_to="run",
+            downstream_impact="shapes the Meridian scope",
+            must_surface_in_report=True,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self._append_claim(claim)
+        advanced = load_run_state(self.run_id)
+        return ConductorStepResult(
+            reply=(
+                f"Got it — noted: \"{user_message}\". "
+                "What else should I factor into the scope? "
+                "(e.g. promo calendar, stockout handling, target metric)"
+            ),
+            possibilities=[
+                Possibility(
+                    kind="ACCEPT",
+                    label="That's the full scope",
+                    payload={"ready_to_advance": True},
+                ),
+                Possibility(
+                    kind="OVERRIDE",
+                    label="Revise a segment",
+                    payload={"action": "open_segments"},
+                ),
+            ],
+            advanced_to=advanced.phase,
+            state=advanced,
+        )
+
+    def author_clarification(
+        self,
+        user_message: str,
+    ) -> ConductorStepResult:
+        """Generate a low-confidence clarification with two short options.
+
+        Called when Lens returns ``CLARIFICATION`` with ``confidence < 0.6``.
+        The two ``Possibility`` chips let the user pick the most likely
+        interpretation without re-typing the message.
+        """
+        advanced = load_run_state(self.run_id)
+        return ConductorStepResult(
+            reply=(
+                f"I want to make sure I understood: \"{user_message}\". "
+                "Which of these is closest?"
+            ),
+            possibilities=[
+                Possibility(
+                    kind="ACCEPT",
+                    label="Yes — proceed",
+                    payload={"clarification": "proceed"},
+                ),
+                Possibility(
+                    kind="CLARIFY",
+                    label="Let me rephrase",
+                    payload={"clarification": "rephrase"},
+                ),
+            ],
+            advanced_to=advanced.phase,
+            state=advanced,
+        )
+
+    def record_override(self, user_message: str) -> ConductorStepResult:
+        """Persist a user OVERRIDE as a Claim; no advance, no chips.
+
+        Called from ``POST /messages`` when Lens returns
+        ``OVERRIDE``. The audit trail captures the override verbatim;
+        the cockpit shows a short acknowledgement reply.
+        """
+        claim = Claim(
+            claim_id=str(uuid.uuid4()),
+            claim=user_message,
+            verification_status="USER_OVERRIDE_ACCEPTED",
+            evidence_type="user_confirmed",
+            applies_to="run",
+            downstream_impact="overrides an agent recommendation",
+            must_surface_in_report=True,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self._append_claim(claim)
+        advanced = load_run_state(self.run_id)
+        return ConductorStepResult(
+            reply="Logged override — proceeding with your adjustment.",
+            possibilities=[],
+            advanced_to=advanced.phase,
+            state=advanced,
+        )
+
+    def record_correction(self, user_message: str) -> ConductorStepResult:
+        """Persist a user CORRECTION as a Claim (meridian_scoping only).
+
+        Called from ``POST /messages`` when Lens returns ``CORRECTION``.
+        The route rejects ``CORRECTION`` outside ``meridian_scoping``
+        (422) so this helper assumes the phase guard has already
+        passed.
+        """
+        claim = Claim(
+            claim_id=str(uuid.uuid4()),
+            claim=user_message,
+            verification_status="USER_OVERRIDE_ACCEPTED",
+            evidence_type="user_confirmed",
+            applies_to="run",
+            downstream_impact="corrects a prior scope statement",
+            must_surface_in_report=True,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self._append_claim(claim)
+        advanced = load_run_state(self.run_id)
+        return ConductorStepResult(
+            reply="Correction logged — I'll update the scope.",
+            possibilities=[],
+            advanced_to=advanced.phase,
+            state=advanced,
+        )
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _append_claim(self, claim: Claim) -> None:
+        """Append a Claim to ``outputs/{run_id}/claim_ledger.json``.
+
+        The ledger is the auditable record of every user-stated scope,
+        override, and correction. Phase 11 will fan the ledger out to
+        the Learning Journal surface; for Phase 10 it's enough that
+        the cockpit can read it back if it needs to render a
+        conversation recap.
+        """
+        ledger_path = self._run_dir / "claim_ledger.json"
+        if ledger_path.exists():
+            ledger = ClaimLedger.model_validate_json(ledger_path.read_text())
+        else:
+            ledger = ClaimLedger(run_id=self.run_id)
+        ledger.claims.append(claim)
+        self._write_json(ledger_path, ledger.model_dump(mode="json"))
 
     def _load_canonical_and_segments(self) -> tuple[pd.DataFrame, SegmentMap]:
         """Load the canonical demand table + segment map from preflight artifacts.
@@ -398,4 +558,108 @@ def _default_outputs_root():
     return OUTPUTS_ROOT
 
 
-__all__ = ("Conductor", "ConductorStepResult", "Possibility")
+# ---------------------------------------------------------------------------
+# Module-level chat-loop helpers (10.3.2 + 10.3.3)
+# ---------------------------------------------------------------------------
+
+
+def load_lens_conversation_history(
+    outputs_root: Path | str | None,
+    run_id: str,
+) -> list["LensConversationTurn"]:
+    """Adapter: read ``outputs/{run_id}/obs_log.json`` into Lens history.
+
+    The ``obs_log`` is a JSON array of ``{event, ts, ...}`` entries
+    written by ``conductor_tools._append_obs``. Only ``event="message"``
+    entries are Lens-conversation material; HALT events are skipped
+    (Lens doesn't classify halts). Per the 10.3.3 spec, an absent
+    obs_log returns an empty list — Lens classifies on
+    ``pipeline_state`` alone in that case.
+
+    Lives in ``conductor.py`` (not ``lens.py``) because it's a
+    conductor-side concern: the cockpit hands the conductor a
+    raw ``user_message``, and the conductor loads the prior
+    history to assemble the LensInput.
+    """
+    from forecasting.agents.lens import ConversationTurn as LensConversationTurn
+
+    if outputs_root is None:
+        return []
+    obs_path = Path(outputs_root) / run_id / "obs_log.json"
+    if not obs_path.exists():
+        return []
+    try:
+        raw_log = json.loads(obs_path.read_text())
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw_log, list):
+        return []
+    history: list[LensConversationTurn] = []
+    for entry in raw_log:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("event") != "message":
+            continue
+        # ``role`` and ``agent`` are optional on the obs entry;
+        # default to ``user`` and ``None`` respectively.
+        role = entry.get("role", "user")
+        if role not in ("user", "assistant"):
+            role = "user"
+        content = entry.get("content", "")
+        history.append(
+            LensConversationTurn(
+                role=role,
+                content=content,
+                agent=entry.get("agent"),
+            )
+        )
+    return history
+
+
+def run_meridian_chat_turn(
+    conductor: "Conductor",
+    user_message: str,
+    conversation_history: list | None = None,
+) -> ConductorStepResult:
+    """Templated Meridian reply for one user message.
+
+    The first cut of the chat loop (Phase 10.3.2) does NOT call
+    Lens.classify_intent here — the HTTP route does the Lens call
+    and dispatches to ``Conductor.record_scope_response``,
+    ``Conductor.author_clarification``, or one of the
+    ``drive_run_to_*`` methods based on the intent. This helper is
+    the **default reply** for SCOPE_RESPONSE messages that the
+    cockpit routes to it (the ``record_scope_response`` method
+    already covers the standard case; this helper exists so the
+    chat loop has a single entry point and a single
+    ``ConductorStepResult`` contract).
+
+    The reply text is templated; the LLM-driven Meridian lands in
+    Phase 10.x. ``conversation_history`` is accepted but unused in
+    this first cut — the future LLM Meridian will consume it.
+    """
+    advanced = load_run_state(conductor.run_id)
+    return ConductorStepResult(
+        reply=(
+            f"Understood: \"{user_message}\". "
+            "I'll fold that into the scope."
+        ),
+        possibilities=[
+            Possibility(
+                kind="ACCEPT",
+                label="Continue",
+                payload={"ready": True},
+            ),
+        ],
+        advanced_to=advanced.phase,
+        state=advanced,
+    )
+
+
+__all__ = (
+    "Conductor",
+    "ConductorStepResult",
+    "Possibility",
+    "run_meridian_chat_turn",
+    "load_lens_conversation_history",
+)

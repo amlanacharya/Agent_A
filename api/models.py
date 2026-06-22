@@ -130,8 +130,23 @@ class SurfaceSnapshot(BaseModel):
     state: dict[str, object] = Field(default_factory=dict)
 
 
+class MessageRequest(BaseModel):
+    """Chat-loop request body for POST /messages — Phase 10 CB3.
+
+    ``run_id`` identifies the Run the cockpit is chatting with;
+    ``user_message`` is the raw text the user typed (or the
+    resolved label of a possibility chip). The route is the only
+    place these two strings meet — the conductor never sees the
+    request envelope, only the dispatched intent + the message.
+    """
+
+    run_id: str
+    user_message: str
+
+
 __all__ = (
     "CockpitPlotRequest",
+    "MessageRequest",
     "PlotKind",
     "PlotResponse",
     "SurfaceName",

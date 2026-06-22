@@ -66,17 +66,17 @@ The plan's headline checkboxes are coarse; below is the work breakdown the execu
 
 ### Phase 10 CB3 — `/messages` endpoint (Lens + Conductor chat loop)
 
-- [ ] **10.3.1** Add `POST /messages` route in `api/app.py`. Body: `{run_id: str, user_message: str}`. Server: load `RunState`, call `Lens.classify_intent(LensInput(conversation_history=[...loaded from outputs/{run_id}/obs_log.json if any...], user_message=user_message, pipeline_state=run_state))`. Dispatch on `intent.intent`:
+- [x] **10.3.1** Add `POST /messages` route in `api/app.py`. Body: `{run_id: str, user_message: str}`. Server: load `RunState`, call `Lens.classify_intent(LensInput(conversation_history=[...loaded from outputs/{run_id}/obs_log.json if any...], user_message=user_message, pipeline_state=run_state))`. Dispatch on `intent.intent`:
   - `SCOPE_RESPONSE` → call `Conductor.record_scope_response(run_id, user_message, lens_pack)` which writes a `Claim` to `outputs/{run_id}/claim_ledger.json` + advances the Meridian conversation. Return `{reply: meridian's next question text, possibilities: [...]}`.
   - `OVERRIDE` → write a `USER_OVERRIDE_ACCEPTED` Claim; return `{reply: "logged override", possibilities: []}`.
   - `ADVANCE_PIPELINE` → call `conductor.drive_run_to_<next_phase>`; return `{reply, possibilities, advanced_to}`.
   - `CLARIFICATION` (confidence < 0.6) → call `Conductor.author_clarification(intent)` to generate two short options; return `{reply, possibilities: [option_a, option_b]}`.
   - `CORRECTION` → similar to `OVERRIDE` but only valid in `meridian_scoping`.
   - `WHAT_IF_REQUEST` → create a Prism clone via `conductor_tools.create_prism_run`; return `{reply: "scenario run created", run_id: <prism_run_id>, possibilities: []}`.
-- [ ] **10.3.2** Add a `run_meridian_chat_turn` helper in `backend/forecasting/conductor.py` that takes the user's message + current state and produces a `ConductorStepResult` with a `reply` text + `possibilities` list. The first cut uses a small templated reply (no LLM call in the chat turn itself; the agentic Meridian LLM call lands in Phase 10.4 once the loop works end-to-end without it).
-- [ ] **10.3.3** Add `LensConversationHistory` adapter: load `outputs/{run_id}/obs_log.json`, parse `event=message` entries into `ConversationTurn(role, content, agent)` objects. For Phase 10's first cut, if no obs log exists, return an empty list and let Lens classify on `pipeline_state` alone (Lens already handles this — see `_SYSTEM` prompt line 4–6).
-- [ ] **10.3.4** Tests: `tests/test_api_messages.py` — using a stub Lens + stub conductor, exercise each of the 6 intent types; assert the response shape. 6 tests minimum.
-- [ ] **10.3.5** Verify: `uv run pytest tests/test_api_messages.py -v` — 6 passed.
+- [x] **10.3.2** Add a `run_meridian_chat_turn` helper in `backend/forecasting/conductor.py` that takes the user's message + current state and produces a `ConductorStepResult` with a `reply` text + `possibilities` list. The first cut uses a small templated reply (no LLM call in the chat turn itself; the agentic Meridian LLM call lands in Phase 10.4 once the loop works end-to-end without it).
+- [x] **10.3.3** Add `LensConversationHistory` adapter: load `outputs/{run_id}/obs_log.json`, parse `event=message` entries into `ConversationTurn(role, content, agent)` objects. For Phase 10's first cut, if no obs log exists, return an empty list and let Lens classify on `pipeline_state` alone (Lens already handles this — see `_SYSTEM` prompt line 4–6).
+- [x] **10.3.4** Tests: `tests/test_api_messages.py` — using a stub Lens + stub conductor, exercise each of the 6 intent types; assert the response shape. 6 tests minimum.
+- [x] **10.3.5** Verify: `uv run pytest tests/test_api_messages.py -v` — 6 passed.
 
 ### Phase 10 CB4 — `/runs/{id}/advance` endpoint (driver button)
 

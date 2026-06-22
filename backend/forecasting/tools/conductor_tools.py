@@ -10,6 +10,7 @@ from forecasting.run_state import (
     HaltedRunError,
     LifecycleError,
     Phase,
+    _phase_str,
     advance_phase,
     can_transition,
     load_run_state,
@@ -84,12 +85,16 @@ def trigger_foundry(run_id: str) -> None:
 def create_prism_run(run_id: str, scenario_description: str, entities: dict) -> dict:
     del scenario_description, entities
     state = load_run_state(run_id)
-    if not can_transition(state.phase, Phase.REPORT_READY):
-        # Prism can only start from a finished run. The
-        # ``can_transition`` check is the same one the state machine
-        # uses for everything else — there is no special prism path.
+    # A Prism clone is a side-branch from a finished run, NOT a
+    # phase transition. The original ``can_transition`` check used
+    # here was wrong because REPORT_READY is terminal (its only
+    # legal successor is HALTED) — ``can_transition(report_ready,
+    # report_ready)`` is False. Prism accepts the run being at
+    # REPORT_READY (the finished report) and creates a child
+    # whatif directory; the parent run stays at REPORT_READY.
+    if _phase_str(state.phase) != Phase.REPORT_READY.value:
         raise LifecycleError(
-            f"create_prism_run: phase={state.phase.value} cannot host a scenario run; "
+            f"create_prism_run: phase={_phase_str(state.phase)} cannot host a scenario run; "
             f"need phase=report_ready"
         )
     whatif_id = f"wi-{uuid.uuid4().hex[:8]}"
