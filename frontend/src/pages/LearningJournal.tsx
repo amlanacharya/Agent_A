@@ -49,7 +49,18 @@ function artifactContent(
   state: LearningJournalState,
   key: ArtifactKey,
 ): string | null | undefined {
-  return state[key] ?? state[`${key}.md` as keyof LearningJournalState];
+  // The ``LearningJournalState`` interface also holds numeric
+  // fields (active_cards, retired_cards); without the cast the
+  // ``state[mdKey as keyof LearningJournalState]`` lookup
+  // widens to ``string | number | null | undefined`` and
+  // doesn't satisfy the return type.
+  const value =
+    state[key] ??
+    (state[`${key}.md` as keyof LearningJournalState] as
+      | string
+      | null
+      | undefined);
+  return value;
 }
 
 export function LearningJournal({ runId }: LearningJournalProps): JSX.Element {

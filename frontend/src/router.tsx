@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { createBrowserRouter } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
 import { GenericSurfacePage } from "@/pages/SurfacePage";
 import { MissionControl } from "@/pages/MissionControl";
@@ -10,13 +10,17 @@ import { ForecastReview } from "@/pages/ForecastReview";
 import { ReplenishmentBoard } from "@/pages/ReplenishmentBoard";
 import { LearningJournal } from "@/pages/LearningJournal";
 import { MlopsMonitor } from "@/pages/MlopsMonitor";
+import { RunConsole } from "@/pages/RunConsole";
 
 /**
  * Router — CB4's routes. CB5–CB12 add bespoke pages and slot them
- * into ``children`` below.
+ * into ``children`` below. CB6 (Phase 10) adds the ``/`` (upload)
+ * and ``/runs/:runId/console`` (chat + advance) routes for the
+ * cockpit driver.
  *
  * Path conventions:
- * - ``/`` → redirect to the default surface (Mission Control).
+ * - ``/`` → RunConsole (upload form when no :runId).
+ * - ``/runs/:runId/console`` → RunConsole (chat + advance).
  * - ``/surfaces/:name/:runId`` → the per-surface page. CB5–CB12
  *   replace the generic fallback with bespoke components; the path
  *   shape stays stable so deep links and the top-nav menu keep
@@ -27,7 +31,11 @@ export const router = createBrowserRouter([
     path: "/",
     element: <AppShell />,
     children: [
-      { index: true, element: <Navigate to="/surfaces/mission_control/dev-run" replace /> },
+      { index: true, element: <RunConsole /> },
+      {
+        path: "runs/:runId/console",
+        element: <RunConsoleRoute />,
+      },
       {
         path: "surfaces/mission_control/:runId",
         element: <MissionControlRoute />,
@@ -70,11 +78,18 @@ export const router = createBrowserRouter([
 ]);
 
 /**
- * Tiny wrapper that extracts :runId and hands it to <MissionControl>.
+ * Tiny wrappers that extract :runId and hand it to each page.
  * Keeping the router declaration lean — the heavy lifting lives in
- * MissionControl itself.
+ * the page components themselves.
  */
 import { useParams } from "react-router-dom";
+
+function RunConsoleRoute(): JSX.Element {
+  // The RunConsole reads :runId from the URL itself, so we don't
+  // need to pass it as a prop. Routing through this wrapper keeps
+  // the route declaration shape consistent with the surface routes.
+  return <RunConsole />;
+}
 
 function MissionControlRoute(): JSX.Element {
   const { runId = "dev-run" } = useParams<{ runId: string }>();

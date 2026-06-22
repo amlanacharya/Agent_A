@@ -526,6 +526,57 @@ def build_cockpit_app(
             "state": result.state.model_dump(mode="json") if result.state else None,
         }
 
+    @app.get("/cockpit-state/{run_id}")
+    def get_cockpit_state(run_id: str) -> dict[str, object]:
+        """Live cockpit state for a run — Phase 10 CB6.
+
+        The RunConsole page polls this every 5s while a run is
+        in flight so the left-rail shows current_step +
+        active_agent + blockers without re-fetching the full
+        surface. Returns the ``CockpitState.to_public_dict()``
+        shape plus a top-level ``phase`` field (the UI's
+        dispatch logic reads it to decide which button to
+        show: advance vs. report link).
+
+        Error mapping:
+
+        * Run not found -> 404
+        """
+        from forecasting.cockpit_state import CockpitState
+        from forecasting.run_state import RunNotFoundError, load_run_state
+
+        try:
+            run_state = load_run_state(run_id)
+        except (FileNotFoundError, RunNotFoundError) as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"run '{run_id}' not found",
+            ) from exc
+
+        phase_value = (
+            run_state.phase.value
+            if hasattr(run_state.phase, "value")
+            else run_state.phase
+        )
+        # ``active_agent`` is a coarse mapping: the conductor
+        # owns the linear pipeline (preflight through report)
+        # and ``meridian`` owns the chat loop. The cockpit
+        # reads this to render the agent avatar in the left
+        # rail.
+        active_agent = "meridian" if phase_value == "meridian_scoping" else "conductor"
+        cockpit_state = CockpitState.from_run_state(
+            run_state,
+            current_step=phase_value,
+            active_agent=active_agent,
+        )
+        payload = cockpit_state.to_public_dict()
+        # Add the top-level ``phase`` field the UI's dispatch
+        # logic needs. ``current_step`` already carries it but
+        # the spec calls for a dedicated ``phase`` key so the
+        # UI doesn't have to alias.
+        payload["phase"] = phase_value
+        return payload
+
     return app
 
 

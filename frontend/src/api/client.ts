@@ -72,6 +72,66 @@ export interface CockpitPlotRequest {
   params?: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 10 cockpit driver — upload + chat + advance response shapes.
+// ---------------------------------------------------------------------------
+
+export interface UploadResponse {
+  run_id: string;
+  domain: string;
+  preflight: Record<string, unknown>;
+  state: Record<string, unknown>;
+}
+
+export type PossibilityKind = "ACCEPT" | "OVERRIDE" | "CLARIFY";
+
+export interface Possibility {
+  kind: PossibilityKind;
+  label: string;
+  payload: Record<string, unknown>;
+}
+
+export interface MessageRequest {
+  run_id: string;
+  user_message: string;
+}
+
+export interface MessageResponse {
+  intent: string;
+  run_id: string;
+  reply: string;
+  possibilities: Possibility[];
+  advanced_to?: string;
+  state?: Record<string, unknown>;
+  prism_run_id?: string;
+}
+
+export interface AdvanceRequest {
+  force?: boolean;
+}
+
+export interface AdvanceResponse {
+  run_id: string;
+  advanced_to: string;
+  reply: string;
+  possibilities: Possibility[];
+  state?: Record<string, unknown>;
+}
+
+export interface CockpitStateResponse {
+  run_id: string;
+  current_step: string;
+  active_agent: string;
+  phase: string;
+  tool_result?: string | null;
+  code_escalation_status?: string | null;
+  code_attempt?: number | null;
+  verifier_gate?: string | null;
+  approval_needed?: boolean;
+  confidence?: string;
+  blockers?: string[];
+}
+
 // Vite's bundler replaces `import.meta.env` at build time. In Node-side
 // tests there is no import.meta.env; default to `/api` (browser shape).
 let BASE: string =
@@ -96,6 +156,23 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
     headers: { "content-type": "application/json", ...init?.headers },
     ...init,
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new ApiError(response.status, response.statusText, body);
+  }
+  return (await response.json()) as T;
+}
+
+/**
+ * Multipart form-data fetch — bypasses the JSON content-type header
+ * because the browser sets the boundary itself when the body is a
+ * FormData. The server reads ``file`` + ``domain`` from the form.
+ */
+async function multipartFetch<T>(path: string, form: FormData): Promise<T> {
+  const response = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    body: form,
   });
   if (!response.ok) {
     const body = await response.text().catch(() => "");
@@ -134,4 +211,43 @@ export function renderPlot(request: CockpitPlotRequest): Promise<PlotResponse> {
     method: "POST",
     body: JSON.stringify(request),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 cockpit driver client functions.
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /uploads — multipart CSV upload, kicks off the preflight
+ * pipeline synchronously and returns the bundle + run_id.
+ */
+export function uploadCsv(file: File, domain: string): Promise<UploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("domain", domain);
+  return multipartFetch("/uploads", form);
+}
+
+/** POST /messages — chat-loop dispatch (Lens classifies, conductor replies). */
+export function postMessage(request: MessageRequest): Promise<MessageResponse> {
+  return jsonFetch("/messages", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+/** POST /runs/{run_id}/advance — driver-button advance (force bypasses chat gate). */
+export function advanceRun(
+  runId: string,
+  request: AdvanceRequest = {},
+): Promise<AdvanceResponse> {
+  return jsonFetch(`/runs/${encodeURIComponent(runId)}/advance`, {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+/** GET /cockpit-state/{run_id} — live state for polling the left rail. */
+export function fetchCockpitState(runId: string): Promise<CockpitStateResponse> {
+  return jsonFetch(`/cockpit-state/${encodeURIComponent(runId)}`);
 }
