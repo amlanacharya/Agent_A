@@ -80,15 +80,15 @@ The plan's headline checkboxes are coarse; below is the work breakdown the execu
 
 ### Phase 10 CB4 — `/runs/{id}/advance` endpoint (driver button)
 
-- [ ] **10.4.1** Add `POST /runs/{id}/advance` route in `api/app.py`. Body: `{force: bool = false}`. Server: load `RunState`, pick the right `conductor.drive_run_to_<phase>` method based on `state.phase`:
+- [x] **10.4.1** Add `POST /runs/{id}/advance` route in `api/app.py`. Body: `{force: bool = false}`. Server: load `RunState`, pick the right `conductor.drive_run_to_<phase>` method based on `state.phase`:
   - `preflight` → `drive_run_to_meridian`
   - `meridian_scoping` → reject (user must `/messages` first); 409 with `{error: "waiting for user input"}`
   - `forge_eda` → `drive_run_to_forge` (also drives `foundry_modelling` + `report_ready` in one call, since EDA is fast — see CB5 for the long-run path)
   - `foundry_modelling` → `drive_run_to_report`
   - `report_ready` → 200 noop, returns `{state, reply: "already at report_ready"}`
-- [ ] **10.4.2** Add `Conductor.drive_run_to_next(state, force=False) -> ConductorStepResult` that dispatches by phase. Same dispatch table as above. Returns the result from the underlying `drive_run_to_*` method.
-- [ ] **10.4.3** Tests: `tests/test_api_advance.py` — using a stub conductor, exercise each phase transition. Verify the 409 on `meridian_scoping` without force=true. 5 tests minimum.
-- [ ] **10.4.4** Verify: `uv run pytest tests/test_api_advance.py -v` — 5 passed.
+- [x] **10.4.2** Add `Conductor.drive_run_to_next(state, force=False) -> ConductorStepResult` that dispatches by phase. Same dispatch table as above. Returns the result from the underlying `drive_run_to_*` method.
+- [x] **10.4.3** Tests: `tests/test_api_advance.py` — using a stub conductor, exercise each phase transition. Verify the 409 on `meridian_scoping` without force=true. 5 tests minimum.
+- [x] **10.4.4** Verify: `uv run pytest tests/test_api_advance.py -v` — 7 passed (one per phase transition + the 409 gate + the 404 not-found).
 
 ### Phase 10 CB5 — Wire Conductor through Forge + Foundry + Report end-to-end
 

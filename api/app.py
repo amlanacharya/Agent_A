@@ -56,7 +56,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from api.models import CockpitPlotRequest, MessageRequest
+from api.models import AdvanceRequest, CockpitPlotRequest, MessageRequest
 from api.plot_engine import PlotEngine
 from api.surfaces import SurfaceRegistry, UnknownSurfaceError
 
@@ -292,12 +292,13 @@ def build_cockpit_app(
         from forecasting.run_state import (
             LifecycleError,
             Phase,
+            RunNotFoundError,
             load_run_state,
         )
 
         try:
             state = load_run_state(request.run_id)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, RunNotFoundError) as exc:
             raise HTTPException(
                 status_code=404,
                 detail=f"run '{request.run_id}' not found",
@@ -467,6 +468,63 @@ def build_cockpit_app(
             status_code=500,
             detail=f"unhandled intent kind: {intent.intent}",
         )
+
+    @app.post("/runs/{run_id}/advance")
+    def post_advance(run_id: str, request: AdvanceRequest | None = None) -> dict[str, object]:
+        """Driver-button advance — Phase 10 CB4.
+
+        The cockpit's "Advance to next phase" button posts here.
+        The route delegates to ``Conductor.drive_run_to_next``,
+        which dispatches based on the current phase and either
+        advances one boundary, chains the rest of the pipeline
+        (forge_eda / force=true), or refuses with a 409 gate
+        (meridian_scoping without force).
+
+        Error mapping:
+
+        * Run not found -> 404
+        * ``AdvanceGateError`` (meridian_scoping without force, or
+          terminal phase) -> 409 with the gate message in ``detail``
+        * ``LifecycleError`` (illegal phase advance) -> 400
+        """
+        from forecasting.conductor import AdvanceGateError, Conductor
+        from forecasting.run_state import LifecycleError, RunNotFoundError, load_run_state
+
+        try:
+            state = load_run_state(run_id)
+        except (FileNotFoundError, RunNotFoundError) as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"run '{run_id}' not found",
+            ) from exc
+
+        force = bool(request.force) if request is not None else False
+        conductor = Conductor(run_id=run_id, outputs_root=root)
+        try:
+            result = conductor.drive_run_to_next(state, force=force)
+        except AdvanceGateError as exc:
+            # 409: the request was understood but the resource is
+            # in a state that prevents the action. The client
+            # should not retry until the user has addressed the
+            # gate (e.g. sent a chat message to Meridian).
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "advance_gated",
+                    "phase": exc.phase,
+                    "message": exc.message,
+                },
+            ) from exc
+        except LifecycleError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return {
+            "run_id": run_id,
+            "advanced_to": result.advanced_to,
+            "reply": result.reply,
+            "possibilities": [p.model_dump(mode="json") for p in result.possibilities],
+            "state": result.state.model_dump(mode="json") if result.state else None,
+        }
 
     return app
 

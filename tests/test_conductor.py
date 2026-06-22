@@ -32,12 +32,19 @@ from forecasting.run_state import Phase, RunState, create_run_state
 
 @dataclass
 class StubConductorTools:
-    """Captures calls to the legacy conductor_tools functions."""
+    """Captures calls to the legacy conductor_tools functions.
+
+    The real ``advance_to_meridian(run_id, user_message)`` takes a
+    second argument (the user's message, currently ``del``'d in
+    production); the stub accepts it positionally to stay
+    signature-compatible with the production call shape.
+    """
 
     advance_to_meridian_calls: list[str] = field(default_factory=list)
     log_halt_calls: list[tuple[str, str]] = field(default_factory=list)
 
-    def advance_to_meridian(self, run_id: str) -> dict[str, Any]:
+    def advance_to_meridian(self, run_id: str, user_message: str = "") -> dict[str, Any]:
+        del user_message  # production ``del``'s it; the stub does too
         self.advance_to_meridian_calls.append(run_id)
         return {"run_id": run_id, "phase": "meridian_scoping"}
 

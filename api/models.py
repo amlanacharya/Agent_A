@@ -144,7 +144,22 @@ class MessageRequest(BaseModel):
     user_message: str
 
 
+class AdvanceRequest(BaseModel):
+    """Driver-button request body for POST /runs/{run_id}/advance — Phase 10 CB4.
+
+    ``force`` is the operator escape hatch — when True, the
+    route bypasses the meridian_scoping chat gate and chains the
+    remaining phases to ``report_ready`` in one call. The cockpit
+    UI never sends ``force=True``; it's wired only to the
+    cockpit-dev console so an operator can unblock a run that
+    the user abandoned mid-scoping.
+    """
+
+    force: bool = False
+
+
 __all__ = (
+    "AdvanceRequest",
     "CockpitPlotRequest",
     "MessageRequest",
     "PlotKind",

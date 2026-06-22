@@ -75,6 +75,29 @@ from forecasting.run_state import (
     save_run_state,
 )
 
+
+class AdvanceGateError(Exception):
+    """Raised when the ``/advance`` route refuses to advance a run.
+
+    Distinct from ``LifecycleError`` (which is about an illegal
+    phase transition) because the refusal here is about the
+    cockpit flow control — a run that's legally at phase X but
+    can't be advanced from the button until the user does
+    something else first (e.g. chat with Meridian in
+    ``meridian_scoping``).
+
+    The HTTP layer maps this to 409 Conflict because the request
+    was understood but the resource is in a state that prevents
+    the action; the client should not retry until the user has
+    addressed the gate (sent a chat message).
+    """
+
+    def __init__(self, run_id: str, phase: str, message: str) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.phase = phase
+        self.message = message
+
 # ``ConductorStepResult.state`` is typed as a forward-ref string
 # (``"RunState | None"``) because importing RunState at the top of
 # contracts.py would force a cycle. Resolve it now that RunState is
@@ -156,7 +179,7 @@ class Conductor:
         loop fills it in via ``run_meridian_chat_turn`` once the user
         sends a message.
         """
-        self._conductor_tools.advance_to_meridian(self.run_id)
+        self._conductor_tools.advance_to_meridian(self.run_id, "")
         advanced = load_run_state(self.run_id)
         return ConductorStepResult(
             reply=(
@@ -264,34 +287,46 @@ class Conductor:
         will trigger monitoring on a Schedule rather than at report time).
         """
         report_path = self._run_dir / "report.json"
-        if not report_path.exists():
-            foundry_report = self._load_foundry_report()
-            report_payload = {
-                "run_id": self.run_id,
-                "phase": Phase.REPORT_READY.value,
-                "overall_mase": foundry_report.overall_mase,
-                "target_met_fraction": foundry_report.target_met_fraction,
-                "series_count": len(foundry_report.series_results),
-                "narrative": foundry_report.narrative,
-                "series_results": [
-                    r.model_dump(mode="json")
-                    for r in foundry_report.series_results
-                ],
-            }
-            self._write_json(report_path, report_payload)
-            # Emit stub Phase 7 markdown so /runs surfaces this Run
-            # immediately. Phase 11 swaps these for real drift
-            # detection on a Schedule.
-            for name in (
-                "MONITORING_REPORT.md",
-                "DRIFT_REPORT.md",
-                "OVERRIDE_ANALYSIS.md",
-                "MODEL_HEALTH.md",
-            ):
-                (self._run_dir / name).write_text(
-                    f"# {name}\n\n_(emitted at report_ready for run {self.run_id}; Phase 11 wires real monitoring)_\n",
-                    encoding="utf-8",
-                )
+        if report_path.exists():
+            # Idempotency: the report is already on disk. Just
+            # transition and return — skip the foundry_report
+            # load so a re-advance doesn't crash if the foundry
+            # artifact is missing for any reason.
+            advanced = advance_phase(state, Phase.REPORT_READY)
+            save_run_state(advanced)
+            return ConductorStepResult(
+                reply="Report ready — open the cockpit to review.",
+                possibilities=[],
+                advanced_to=Phase.REPORT_READY.value,
+                state=advanced,
+            )
+        foundry_report = self._load_foundry_report()
+        report_payload = {
+            "run_id": self.run_id,
+            "phase": Phase.REPORT_READY.value,
+            "overall_mase": foundry_report.overall_mase,
+            "target_met_fraction": foundry_report.target_met_fraction,
+            "series_count": len(foundry_report.series_results),
+            "narrative": foundry_report.narrative,
+            "series_results": [
+                r.model_dump(mode="json")
+                for r in foundry_report.series_results
+            ],
+        }
+        self._write_json(report_path, report_payload)
+        # Emit stub Phase 7 markdown so /runs surfaces this Run
+        # immediately. Phase 11 swaps these for real drift
+        # detection on a Schedule.
+        for name in (
+            "MONITORING_REPORT.md",
+            "DRIFT_REPORT.md",
+            "OVERRIDE_ANALYSIS.md",
+            "MODEL_HEALTH.md",
+        ):
+            (self._run_dir / name).write_text(
+                f"# {name}\n\n_(emitted at report_ready for run {self.run_id}; Phase 11 wires real monitoring)_\n",
+                encoding="utf-8",
+            )
         advanced = advance_phase(state, Phase.REPORT_READY)
         save_run_state(advanced)
         return ConductorStepResult(
@@ -300,6 +335,113 @@ class Conductor:
             advanced_to=Phase.REPORT_READY.value,
             state=advanced,
         )
+
+    def drive_run_to_next(
+        self,
+        state: RunState,
+        *,
+        force: bool = False,
+    ) -> ConductorStepResult:
+        """Advance the run by one phase boundary (the ``/advance`` button).
+
+        Dispatch table (mirrors the CB4 plan spec):
+
+        * ``preflight`` → ``drive_run_to_meridian``
+        * ``meridian_scoping`` → raise ``AdvanceGateError`` unless
+          ``force=True`` (the user must chat first; ``force`` is the
+          escape hatch the operator can flip from the cockpit dev
+          console)
+        * ``forge_eda`` → chain ``drive_run_to_forge`` →
+          ``drive_run_to_foundry`` → ``drive_run_to_report`` (EDA is
+          fast; the user clicked "advance", so they trust the rest
+          of the pipeline)
+        * ``foundry_modelling`` → ``drive_run_to_report``
+        * ``report_ready`` → noop ``ConductorStepResult``
+        * ``halted`` → ``AdvanceGateError`` (a halted run is
+          terminal; the cockpit must start a new run)
+
+        Each underlying ``drive_run_to_<phase>`` method is itself
+        idempotent (skips work if its artifact already exists), so a
+        partial advance + crash + re-advance resumes cleanly. The
+        returned ``ConductorStepResult`` is the **last** drive
+        step's result — that's the state the cockpit needs to
+        render (the final phase + the final reply).
+        """
+        phase_value = state.phase
+        if hasattr(phase_value, "value"):
+            phase_value = phase_value.value
+
+        if phase_value == "preflight":
+            return self.drive_run_to_meridian(state)
+
+        if phase_value == "meridian_scoping":
+            if not force:
+                raise AdvanceGateError(
+                    run_id=self.run_id,
+                    phase=phase_value,
+                    message=(
+                        "Run is in meridian_scoping — the user must "
+                        "answer Meridian's questions via POST /messages "
+                        "before advancing."
+                    ),
+                )
+            # force=True: bypass the chat gate and chain to
+            # report_ready. This is the operator escape hatch.
+            return self._chain_to_report_ready("meridian_scoping")
+
+        if phase_value == "forge_eda":
+            # Per the CB4 plan: forge_eda → drive the remaining
+            # phases in one call. EDA is fast, so the user clicked
+            # advance expecting the whole pipeline to finish.
+            return self._chain_to_report_ready("forge_eda")
+
+        if phase_value == "foundry_modelling":
+            return self.drive_run_to_report(state)
+
+        if phase_value == "report_ready":
+            return ConductorStepResult(
+                reply="Run is already at report_ready — nothing to advance.",
+                possibilities=[],
+                advanced_to="report_ready",
+                state=load_run_state(self.run_id),
+            )
+
+        # ``halted`` and any future terminal state land here.
+        raise AdvanceGateError(
+            run_id=self.run_id,
+            phase=phase_value,
+            message=(
+                f"Run is at {phase_value}; cannot advance from a "
+                "terminal state."
+            ),
+        )
+
+    def _chain_to_report_ready(self, starting_phase: str) -> ConductorStepResult:
+        """Drive the pipeline from ``starting_phase`` through to report_ready.
+
+        Used by ``drive_run_to_next`` for the chained case (when
+        the user clicks advance from ``forge_eda`` or
+        ``meridian_scoping`` with ``force=True``). Each drive
+        method is idempotent — re-invocation skips the work if
+        the artifact already exists. The returned result is the
+        **last** step's result, so the cockpit sees the final
+        phase + the final reply.
+
+        ``starting_phase`` decides which boundary to start at:
+
+        * ``meridian_scoping`` (force=true) → drive forge → foundry → report
+        * ``forge_eda`` → drive foundry → report
+        * ``foundry_modelling`` → drive report
+        * ``report_ready`` → noop
+        """
+        if starting_phase == "meridian_scoping":
+            state = load_run_state(self.run_id)
+            self.drive_run_to_forge(state)
+        if starting_phase in ("meridian_scoping", "forge_eda"):
+            state = load_run_state(self.run_id)
+            self.drive_run_to_foundry(state)
+        state = load_run_state(self.run_id)
+        return self.drive_run_to_report(state)
 
     # ------------------------------------------------------------------
     # Chat-loop entry points — called by ``POST /messages`` after
@@ -657,6 +799,7 @@ def run_meridian_chat_turn(
 
 
 __all__ = (
+    "AdvanceGateError",
     "Conductor",
     "ConductorStepResult",
     "Possibility",
