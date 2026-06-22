@@ -257,6 +257,13 @@ class Conductor:
             ensemble_summary = self._ensemble.summarise_scorecards(
                 harness_report.scorecards
             )
+            # ``summarise_scorecards`` returns an ``EnsembleTracker``,
+            # not a Pydantic ``EnsembleSummary``. The tracker has a
+            # ``.summary()`` method that produces the cockpit-facing
+            # Pydantic view; the FoundryReport's ``ensemble`` field
+            # is typed as ``EnsembleSummary`` so we need that shape.
+            if hasattr(ensemble_summary, "summary"):
+                ensemble_summary = ensemble_summary.summary()
             self._write_json(
                 self._run_dir / "ensemble_summary.json",
                 ensemble_summary.model_dump(mode="json"),
@@ -608,9 +615,15 @@ class Conductor:
 
         The preflight persists ``preflight.json`` with the bundle
         + segment_map.model_dump() under ``outputs/{run_id}/``. We
-        read the segment map from there (the canonical table itself
-        is held in ``data_store`` in-memory; for Phase 10 we
-        re-read the per-series frames from there).
+        read the segment map from there; the canonical table itself
+        is held in ``data_store`` in-memory (one DataFrame per
+        series, keyed by series_key). Preflight stores each frame
+        with just ``["date", "demand"]`` columns — the series_key
+        is the dict key, NOT a column. We tag each frame with its
+        series_key before concatenating so downstream consumers
+        (``build_feature_table``, ``run_forecast_harness``) see
+        the canonical ``series_key`` / ``date`` / ``demand``
+        contract.
         """
         from forecasting.data_store import get_series, get_series_keys
         from forecasting.contracts import SegmentMap
@@ -624,9 +637,25 @@ class Conductor:
         payload = json.loads(preflight_path.read_text())
         segment_map = SegmentMap.model_validate(payload["segment_map"])
 
-        # Reconstruct the canonical table from the data_store.
-        frames = [get_series(self.run_id, key) for key in get_series_keys(self.run_id)]
-        canonical_table = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        # Reconstruct the canonical table from the data_store,
+        # tagging each frame with its series_key so the concat
+        # has the canonical ``series_key`` / ``date`` / ``demand``
+        # columns.
+        keys = get_series_keys(self.run_id)
+        frames = []
+        for key in keys:
+            frame = get_series(self.run_id, key)
+            # Defensive copy + column tagging. ``frame`` is
+            # already a copy per data_store.get_series's contract
+            # (``copy(deep=True)``).
+            tagged = frame.assign(series_key=key)
+            # ``assign`` appends the column at the end; the
+            # canonical feature factory doesn't care about order
+            # but the column must be present.
+            frames.append(tagged)
+        canonical_table = (
+            pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        )
         return canonical_table, segment_map
 
     def _load_foundry_report(self) -> FoundryReport:
