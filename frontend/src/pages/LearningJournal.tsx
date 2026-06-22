@@ -21,11 +21,17 @@ interface LearningJournalState {
   active_cards?: number;
   retired_cards?: number;
   LEARNINGS?: string | null;
+  "LEARNINGS.md"?: string | null;
   DECISIONS?: string | null;
+  "DECISIONS.md"?: string | null;
   ASSUMPTIONS?: string | null;
+  "ASSUMPTIONS.md"?: string | null;
   RUNBOOK?: string | null;
+  "RUNBOOK.md"?: string | null;
   MODEL_REGISTRY?: string | null;
+  "MODEL_REGISTRY.md"?: string | null;
   PROMOTION_DECISIONS?: string | null;
+  "PROMOTION_DECISIONS.md"?: string | null;
 }
 
 const ARTIFACTS = [
@@ -38,6 +44,13 @@ const ARTIFACTS = [
 ] as const;
 
 type ArtifactKey = (typeof ARTIFACTS)[number]["key"];
+
+function artifactContent(
+  state: LearningJournalState,
+  key: ArtifactKey,
+): string | null | undefined {
+  return state[key] ?? state[`${key}.md` as keyof LearningJournalState];
+}
 
 export function LearningJournal({ runId }: LearningJournalProps): JSX.Element {
   const surface = useSurface("learning_journal", runId);
@@ -73,7 +86,7 @@ export function LearningJournal({ runId }: LearningJournalProps): JSX.Element {
         />
         <MetricCard
           label="Artifacts"
-          value={`${ARTIFACTS.filter((a) => Boolean(state[a.key as ArtifactKey])).length} / ${ARTIFACTS.length}`}
+          value={`${ARTIFACTS.filter((a) => Boolean(artifactContent(state, a.key))).length} / ${ARTIFACTS.length}`}
           caption="Workspace markdown present"
         />
       </section>
@@ -97,14 +110,14 @@ export function LearningJournal({ runId }: LearningJournalProps): JSX.Element {
           ))}
         </nav>
         <article className="max-h-96 overflow-auto p-stack-lg">
-          {state[active] == null ? (
+          {artifactContent(state, active) == null ? (
             <p className="text-body-md italic text-text-muted">
               No {ARTIFACTS.find((a) => a.key === active)?.label} artifact for
               this run.
             </p>
           ) : (
             <pre className="whitespace-pre-wrap font-mono text-data-mono text-text-main">
-              {state[active]}
+              {artifactContent(state, active)}
             </pre>
           )}
         </article>

@@ -17,6 +17,19 @@ function cannedState(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
+function backendArtifactState(): Record<string, unknown> {
+  return {
+    active_cards: 1,
+    retired_cards: 0,
+    "LEARNINGS.md": "# LEARNINGS\n\n## Active\n\n- dev-card\n\n## Retired\n\n",
+    "DECISIONS.md": "# DECISIONS.md\n",
+    "ASSUMPTIONS.md": "# ASSUMPTIONS.md\n",
+    "RUNBOOK.md": "# RUNBOOK.md\n",
+    "MODEL_REGISTRY.md": "# MODEL_REGISTRY.md\n",
+    "PROMOTION_DECISIONS.md": "# PROMOTION_DECISIONS.md\n",
+  };
+}
+
 function renderLearningJournal(state: Record<string, unknown>): ReturnType<typeof render> {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -70,5 +83,13 @@ describe("<LearningJournal> (CB11)", () => {
     await waitFor(() =>
       expect(screen.getByText(/card-a/)).toBeInTheDocument(),
     );
+  });
+
+  it("renders markdown artifacts returned with .md backend keys", async () => {
+    renderLearningJournal(backendArtifactState());
+    await waitFor(() =>
+      expect(screen.getByText(/dev-card/)).toBeInTheDocument(),
+    );
+    expect(screen.getByText("6 / 6")).toBeInTheDocument();
   });
 });
